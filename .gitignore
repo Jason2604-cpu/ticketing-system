@@ -1,0 +1,39 @@
+# ===== BACKEND (Java/Maven) =====
+target/
+.mvn/wrapper/maven-wrapper.jar
+*.class
+*.jar
+*.war
+
+# Environment
+application-local.properties
+application-local.yml
+
+# Logs
+*.log
+logs/
+
+# ===== FRONTEND (React/Vite) =====
+node_modules/
+dist/
+dist-ssr/
+build/
+
+# Environment
+.env
+.env.local
+.env.*.local
+npm-debug.log*
+
+# ===== IDE =====
+.idea/
+*.iml
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
