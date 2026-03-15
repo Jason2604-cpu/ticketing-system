@@ -1,10 +1,10 @@
-package com.jason.backend;
+package com.konohahelpdesk;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 
 @SpringBootTest
-class BackendApplicationTests {
+class KonohaHelpdeskApplicationTests {
 
 	@Test
 	void contextLoads() {
