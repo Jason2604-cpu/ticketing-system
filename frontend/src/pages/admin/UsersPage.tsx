@@ -1,7 +1,7 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Building2, Crown, MailCheck, Pencil, Plus, Search, User as UserIcon, Wrench } from 'lucide-react'
+import { Building2, Crown, KeyRound, MailCheck, Pencil, Plus, Search, User as UserIcon, Wrench } from 'lucide-react'
 import { Topbar } from '../../components/layout/Topbar'
 import { Page } from '../../components/layout/AppShell'
 import { Card } from '../../components/ui/Card'
@@ -15,8 +15,9 @@ import { GenericBadge, UserStatusBadge } from '../../components/ui/Badge'
 import { Table, Td, Th, Tr } from '../../components/ui/Table'
 import { Alert, EmptyState } from '../../components/ui/Misc'
 import { useToast } from '../../components/ui/useToast'
-import { usersApi } from '../../api/users'
+import { usersApi, teamApi } from '../../api/users'
 import { companiesApi } from '../../api/companies'
+import { rolesApi } from '../../api/roles'
 import { api, errorMessage, isApiError } from '../../lib/api'
 import { formatMonthYear } from '../../lib/format'
 import { isValidEmail } from '../../lib/countries'
@@ -30,6 +31,19 @@ const ROLE_OPTS: { value: Role; label: string; description: string; icon: React.
 ]
 const roleLabel = (r: Role) => ROLE_OPTS.find((o) => o.value === r)?.label ?? r
 type Filter = 'ALL' | 'STAFF' | 'CUSTOMERS' | Role
+
+/**
+ * Which additive roles make sense on top of a given primary role.
+ * Staff (Admin/Engineer, the EMP side) can hold both at once — that's the point of merging them.
+ * Customer-side (Customer/Company Admin, the CUS side) are mutually exclusive tiers of the same
+ * relationship, so no additive role applies there — switching means changing the primary role.
+ */
+const ADDITIONAL_ROLE_OPTIONS: Record<Role, Role[]> = {
+  ADMIN: ['ENGINEER'],
+  ENGINEER: ['ADMIN'],
+  CUSTOMER_ADMIN: [],
+  CUSTOMER: [],
+}
 
 /** Admin Panel → Users: everyone in the system (staff and customer contacts). */
 export default function UsersPage() {
@@ -87,9 +101,10 @@ export default function UsersPage() {
                     <div className="flex flex-wrap gap-1.5">
                       {(u.role === 'ENGINEER' || u.role === 'ADMIN') && <GenericBadge tone="blue"><Wrench size={12} className="mr-1 inline" />Engineer</GenericBadge>}
                       {u.role === 'ADMIN' && <GenericBadge tone="purple"><Crown size={12} className="mr-1 inline" />Admin</GenericBadge>}
-                      {u.role === 'CUSTOMER_ADMIN' && <GenericBadge tone="brand"><Crown size={12} className="mr-1 inline" />Company Admin</GenericBadge>}
+                      {u.role === 'CUSTOMER_ADMIN' && <GenericBadge tone="brand"><Building2 size={12} className="mr-1 inline" />Company Admin</GenericBadge>}
                       {u.role === 'CUSTOMER' && <GenericBadge>Customer</GenericBadge>}
                       {u.additionalRoles?.map((r) => <GenericBadge key={r} tone="purple">+ {roleLabel(r)}</GenericBadge>)}
+                      {u.customRoles?.map((r) => <GenericBadge key={r.id} tone="purple"><KeyRound size={11} className="mr-1 inline" />{r.name}</GenericBadge>)}
                     </div>
                   </Td>
                   <Td>
@@ -161,17 +176,25 @@ function EditUserModal({ user, companies, onClose }: { user: User; companies: { 
   const qc = useQueryClient()
   const toast = useToast()
   const isStaff = user.role === 'ENGINEER' || user.role === 'ADMIN'
+  const isCustomerSide = user.role === 'CUSTOMER' || user.role === 'CUSTOMER_ADMIN'
   const [selected, setSelected] = useState<Set<number>>(new Set(user.assignedCompanies?.map((c) => c.id) ?? []))
   const [roles, setRoles] = useState<Set<Role>>(new Set(user.additionalRoles ?? []))
-  const invalidate = () => { void qc.invalidateQueries({ queryKey: ['users'] }); void qc.invalidateQueries({ queryKey: ['companies'] }) }
+  const [customRoleIds, setCustomRoleIds] = useState<Set<number>>(new Set(user.customRoles?.map((r) => r.id) ?? []))
+  const invalidate = () => { void qc.invalidateQueries({ queryKey: ['users'] }); void qc.invalidateQueries({ queryKey: ['companies'] }); void qc.invalidateQueries({ queryKey: ['team'] }) }
+
+  const customRoles = useQuery({ queryKey: ['roles'], queryFn: rolesApi.list, enabled: isStaff })
+  const grantableCustomRoles = (customRoles.data ?? []).filter((r) => r.custom)
 
   const save = useMutation({ mutationFn: () => usersApi.setCompanies(user.id, [...selected]), onSuccess: () => { invalidate(); toast('Assignments saved'); onClose() } })
   const saveRoles = useMutation({ mutationFn: () => usersApi.setRoles(user.id, [...roles]), onSuccess: () => { invalidate(); toast('Roles updated'); onClose() }, onError: (e) => toast(errorMessage(e), 'error') })
+  const saveCustomRoles = useMutation({ mutationFn: () => usersApi.setCustomRoles(user.id, [...customRoleIds]), onSuccess: () => { invalidate(); toast('Roles updated'); onClose() }, onError: (e) => toast(errorMessage(e), 'error') })
+  const toggleAdmin = useMutation({ mutationFn: (admin: boolean) => teamApi.setAdmin(user.companyId!, user.id, admin), onSuccess: () => { invalidate(); toast('Updated'); onClose() }, onError: (e) => toast(errorMessage(e), 'error') })
   const resend = useMutation({ mutationFn: () => usersApi.resendInvite(user.id), onSuccess: () => toast('Invitation re-sent'), onError: (e) => toast(errorMessage(e), 'error') })
   const setStatus = useMutation({ mutationFn: (s: UserStatus) => usersApi.setStatus(user.id, s), onSuccess: () => { invalidate(); toast('Status updated'); onClose() }, onError: (e) => toast(errorMessage(e), 'error') })
   const remove = useMutation({ mutationFn: () => usersApi.remove(user.id), onSuccess: () => { invalidate(); toast('User removed'); onClose() }, onError: (e) => toast(errorMessage(e), 'error') })
   const toggle = (id: number, on: boolean) => setSelected((s) => { const n = new Set(s); if (on) n.add(id); else n.delete(id); return n })
   const toggleRole = (r: Role, on: boolean) => setRoles((s) => { const n = new Set(s); if (on) n.add(r); else n.delete(r); return n })
+  const toggleCustomRole = (id: number, on: boolean) => setCustomRoleIds((s) => { const n = new Set(s); if (on) n.add(id); else n.delete(id); return n })
 
   return (
     <Modal open onClose={onClose} title={`${user.firstName} ${user.lastName}`}
@@ -194,19 +217,54 @@ function EditUserModal({ user, companies, onClose }: { user: User; companies: { 
           </div>
         </>
       )}
-      <div className="mt-4">
-        <p className="mb-2 text-sm font-medium">Additional roles</p>
-        <p className="mb-2 text-xs text-muted">Grant extra privileges on top of their primary role — e.g. give an Engineer Admin access too.</p>
-        {saveRoles.isError && <Alert className="mb-2">{errorMessage(saveRoles.error)}</Alert>}
-        <div className="grid grid-cols-2 gap-2 rounded-lg border border-line p-3">
-          {ROLE_OPTS.filter((o) => o.value !== user.role).map((o) => (
-            <Checkbox key={o.value} label={o.label} checked={roles.has(o.value)} onChange={(e) => toggleRole(o.value, e.target.checked)} />
-          ))}
+      {isCustomerSide && user.companyId && (
+        <div className="mt-4 flex items-center justify-between rounded-lg border border-line p-3">
+          <div>
+            <p className="text-sm font-medium">Company Admin</p>
+            <p className="text-xs text-muted">Company Admin and Customer are mutually exclusive tiers — toggling this changes their role, it doesn't add a second one. Stays in sync with the Team Members page in their portal.</p>
+            {toggleAdmin.isError && <p className="mt-1 text-xs text-red-600">{errorMessage(toggleAdmin.error)}</p>}
+          </div>
+          <ToggleSwitch checked={user.role === 'CUSTOMER_ADMIN'} disabled={toggleAdmin.isPending} onChange={(v) => toggleAdmin.mutate(v)} />
         </div>
-        <div className="mt-2 flex justify-end">
-          <Button size="sm" variant="secondary" onClick={() => saveRoles.mutate()} loading={saveRoles.isPending}>Save roles</Button>
+      )}
+      {(() => {
+        const allowedRoles = ADDITIONAL_ROLE_OPTIONS[user.role]
+        if (!isStaff) return null
+        return (
+          <div className="mt-4">
+            <p className="mb-2 text-sm font-medium">Additional roles</p>
+            {allowedRoles.length > 0 ? (
+              <>
+                <p className="mb-2 text-xs text-muted">Grant extra privileges on top of their primary role — e.g. give an Engineer Admin access too.</p>
+                {saveRoles.isError && <Alert className="mb-2">{errorMessage(saveRoles.error)}</Alert>}
+                <div className="grid grid-cols-2 gap-2 rounded-lg border border-line p-3">
+                  {ROLE_OPTS.filter((o) => allowedRoles.includes(o.value)).map((o) => (
+                    <Checkbox key={o.value} label={o.label} checked={roles.has(o.value)} onChange={(e) => toggleRole(o.value, e.target.checked)} />
+                  ))}
+                </div>
+                <div className="mt-2 flex justify-end">
+                  <Button size="sm" variant="secondary" onClick={() => saveRoles.mutate()} loading={saveRoles.isPending}>Save roles</Button>
+                </div>
+              </>
+            ) : null}
+          </div>
+        )
+      })()}
+      {isStaff && grantableCustomRoles.length > 0 && (
+        <div className="mt-4">
+          <p className="mb-2 text-sm font-medium">Custom roles</p>
+          <p className="mb-2 text-xs text-muted">Roles created in Role Management — each grants exactly the privileges ticked on it.</p>
+          {saveCustomRoles.isError && <Alert className="mb-2">{errorMessage(saveCustomRoles.error)}</Alert>}
+          <div className="grid grid-cols-2 gap-2 rounded-lg border border-line p-3">
+            {grantableCustomRoles.map((r) => (
+              <Checkbox key={r.id} label={r.name} checked={customRoleIds.has(r.id)} onChange={(e) => toggleCustomRole(r.id, e.target.checked)} />
+            ))}
+          </div>
+          <div className="mt-2 flex justify-end">
+            <Button size="sm" variant="secondary" onClick={() => saveCustomRoles.mutate()} loading={saveCustomRoles.isPending}>Save custom roles</Button>
+          </div>
         </div>
-      </div>
+      )}
       <div className="mt-5 flex flex-wrap gap-2 border-t border-line pt-4">
         {user.status === 'INVITED' && <Button size="sm" variant="secondary" onClick={() => resend.mutate()} loading={resend.isPending}><MailCheck size={14} /> Resend invitation</Button>}
         {user.status === 'ACTIVE' && <Button size="sm" variant="secondary" onClick={() => setStatus.mutate('INACTIVE')}>Deactivate</Button>}
@@ -214,5 +272,14 @@ function EditUserModal({ user, companies, onClose }: { user: User; companies: { 
         <Button size="sm" variant="danger" onClick={() => confirm(`Remove ${user.firstName} ${user.lastName}?`) && remove.mutate()}>Remove</Button>
       </div>
     </Modal>
+  )
+}
+
+function ToggleSwitch({ checked, disabled, onChange }: { checked: boolean; disabled?: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button type="button" role="switch" aria-checked={checked} disabled={disabled} onClick={() => onChange(!checked)}
+      className={`relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-50 ${checked ? 'bg-brand-600' : 'bg-gray-200'}`}>
+      <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${checked ? 'left-0.5 translate-x-5' : 'left-0.5'}`} />
+    </button>
   )
 }

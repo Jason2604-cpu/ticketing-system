@@ -20,10 +20,10 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 
-/** User administration. ADMIN only — enforced per method, not just at the URL level. */
+/** User administration. ADMIN, or anyone holding the MANAGE_USERS privilege — enforced per method, not just at the URL level. */
 @RestController
 @RequestMapping("/api/users")
-@PreAuthorize("hasRole('ADMIN')")
+@PreAuthorize("hasRole('ADMIN') or hasAuthority('PRIV_MANAGE_USERS')")
 public class UserController {
 
     private final UserService userService;
@@ -49,6 +49,12 @@ public class UserController {
     @PutMapping("/{id}/roles")
     public ResponseEntity<UserResponse> setRoles(@PathVariable Long id, @RequestBody java.util.Set<Roles> roles) {
         return ResponseEntity.ok(userService.setAdditionalRoles(id, roles == null ? java.util.Set.of() : roles));
+    }
+
+    /** Replace the custom (Role Management) roles granted to a user — staff only. */
+    @PutMapping("/{id}/custom-roles")
+    public ResponseEntity<UserResponse> setCustomRoles(@PathVariable Long id, @RequestBody java.util.Set<Long> roleIds) {
+        return ResponseEntity.ok(userService.setCustomRoles(id, roleIds == null ? java.util.Set.of() : roleIds));
     }
 
     @PostMapping

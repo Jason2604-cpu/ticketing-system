@@ -225,6 +225,15 @@ public class TicketService {
         if (cur == TicketStatus.CLOSED && next != TicketStatus.OPEN) {
             throw new BusinessRuleException("A closed ticket can only be reopened");
         }
+        // Reopen window: once a ticket has sat resolved/closed for more than 7 days, it's locked —
+        // applies to staff and customers alike, so old tickets don't get resurrected indefinitely.
+        if (next == TicketStatus.OPEN && (cur == TicketStatus.RESOLVED || cur == TicketStatus.CLOSED)) {
+            LocalDateTime terminalAt = cur == TicketStatus.CLOSED ? t.getClosedAt() : t.getResolvedAt();
+            if (terminalAt != null && terminalAt.isBefore(LocalDateTime.now().minusDays(7))) {
+                throw new BusinessRuleException("This ticket was " + (cur == TicketStatus.CLOSED ? "closed" : "resolved")
+                    + " more than 7 days ago and can no longer be reopened");
+            }
+        }
 
         t.setStatus(next);
         if (next == TicketStatus.RESOLVED) t.setResolvedAt(LocalDateTime.now());

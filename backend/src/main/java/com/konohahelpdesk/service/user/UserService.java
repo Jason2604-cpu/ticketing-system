@@ -115,13 +115,16 @@ public class UserService {
             users = userRepository.findByStatusNot(UserStatus.IS_DELETED);
         }
         var byEngineer = assignments.companiesByEngineer();
-        var additionalByUser = roleService.additionalRolesByUser(users.stream().map(User::getId).toList());
+        var ids = users.stream().map(User::getId).toList();
+        var additionalByUser = roleService.additionalRolesByUser(ids);
+        var customByUser = roleService.customRolesByUser(ids);
         return users.stream().map(u -> {
             UserResponse r = UserResponse.from(u);
             if (u.getRole() == Roles.ENGINEER || u.getRole() == Roles.ADMIN) {
                 r.setAssignedCompanies(byEngineer.getOrDefault(u.getId(), List.of()));
             }
             r.setAdditionalRoles(additionalByUser.getOrDefault(u.getId(), List.of()));
+            r.setCustomRoles(customByUser.getOrDefault(u.getId(), List.of()));
             return r;
         }).toList();
     }
@@ -129,6 +132,7 @@ public class UserService {
     public UserResponse getById(Long id) {
         UserResponse r = UserResponse.from(loadActiveOrThrow(id));
         r.setAdditionalRoles(roleService.additionalRoles(id));
+        r.setCustomRoles(roleService.customRoles(id));
         return r;
     }
 
@@ -137,6 +141,14 @@ public class UserService {
     public UserResponse setAdditionalRoles(Long id, Set<Roles> roles) {
         loadActiveOrThrow(id);
         roleService.setAdditionalRoles(id, roles);
+        return getById(id);
+    }
+
+    /** ADMIN-only: replace the custom (Role Management) roles granted to a user. */
+    @Transactional
+    public UserResponse setCustomRoles(Long id, Set<Long> roleIds) {
+        loadActiveOrThrow(id);
+        roleService.setCustomRoles(id, roleIds);
         return getById(id);
     }
 
@@ -179,7 +191,7 @@ public class UserService {
 
     /**
      * Staff (ADMIN/ENGINEER) share the EMPxxxxx prefix; customer-side (CUSTOMER/CUSTOMER_ADMIN)
-     * share CUSxxxxxx -- merged so a user's code doesn't change if their role changes within the
+     * share CUSxxxxxx — merged so a user's code doesn't change if their role changes within the
      * same side. Skips codes still held by soft-deleted users.
      */
     private String nextUserCode(Roles role) {

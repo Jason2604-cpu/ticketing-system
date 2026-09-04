@@ -1,6 +1,8 @@
 package com.konohahelpdesk.security;
 
 import com.konohahelpdesk.config.AppProperties;
+import com.konohahelpdesk.model.rbac.Privilege;
+import com.konohahelpdesk.model.rbac.Role;
 import com.konohahelpdesk.model.rbac.UserRole;
 import com.konohahelpdesk.model.user.User;
 import com.konohahelpdesk.model.user.UserStatus;
@@ -84,22 +86,29 @@ public class JwtCookieFilter extends OncePerRequestFilter {
     }
 
     /**
-     * Null means "do not authenticate". Includes the user's primary role plus any additive roles
-     * granted via the Roles/UserRoles tables (see RoleService) -- an ENGINEER granted ADMIN gets
-     * both ROLE_ENGINEER and ROLE_ADMIN, satisfying @PreAuthorize checks for either.
+     * Null means "do not authenticate". Includes the user's primary role, any additive system
+     * roles granted via the Roles/UserRoles tables (see RoleService) — an ENGINEER granted ADMIN
+     * gets both ROLE_ENGINEER and ROLE_ADMIN, satisfying @PreAuthorize checks for either — and,
+     * for every custom (Role Management) role granted, a PRIV_* authority per privilege it carries.
+     * Real enforcement: a custom role's ticked privileges only ever add access, never a label.
      */
     private List<GrantedAuthority> authoritiesFor(User user) {
         if (user.getStatus() != UserStatus.ACTIVE) {
             return null; // INVITED (not yet activated), INACTIVE, IS_DELETED
         }
-        java.util.LinkedHashSet<String> roleNames = new java.util.LinkedHashSet<>();
-        roleNames.add(user.getRole().name());
+        java.util.LinkedHashSet<GrantedAuthority> authorities = new java.util.LinkedHashSet<>();
+        authorities.add(new SimpleGrantedAuthority("ROLE_" + user.getRole().name()));
         for (UserRole ur : userRoleRepository.findByUserId(user.getId())) {
-            roleNames.add(ur.getRole().getName());
+            Role role = ur.getRole();
+            if (role.isCustom()) {
+                for (Privilege p : role.getPrivileges()) {
+                    authorities.add(new SimpleGrantedAuthority("PRIV_" + p.name()));
+                }
+            } else {
+                authorities.add(new SimpleGrantedAuthority("ROLE_" + role.getName()));
+            }
         }
-        return roleNames.stream()
-            .map(name -> (GrantedAuthority) new SimpleGrantedAuthority("ROLE_" + name))
-            .toList();
+        return List.copyOf(authorities);
     }
 
     private Long parseUserId(String subject) {

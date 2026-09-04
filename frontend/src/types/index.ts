@@ -19,8 +19,33 @@ export interface User {
   assignedCompanies?: { id: number; name: string }[]
   /** Additive RBAC: roles granted on top of `role`, e.g. an ENGINEER also granted ADMIN. */
   additionalRoles?: Role[]
+  /** Role Management: admin-created custom roles (with their privileges) granted to this user. */
+  customRoles?: CustomRoleRef[]
   createdAt: string
   updatedAt: string
+}
+
+// ── Role Management (custom roles + privileges) ─────────────────────────────
+export type Privilege = 'MANAGE_USERS' | 'MANAGE_COMPANIES' | 'MANAGE_PLANS' | 'MANAGE_ROLES'
+
+export interface CustomRoleRef {
+  id: number
+  name: string
+  privileges: Privilege[]
+}
+
+export interface RoleDef {
+  id: number
+  name: string
+  description?: string
+  custom: boolean
+  privileges: Privilege[]
+}
+
+export interface RoleRequest {
+  name: string
+  description?: string
+  privileges: Privilege[]
 }
 
 export interface NotificationPreferences {
@@ -169,7 +194,6 @@ export interface TicketSummary {
 
 export interface TicketComment { id: number; author?: Person; body: string; internal: boolean; system: boolean; createdAt: string }
 
-// -- Notifications --
 export type NotificationType = 'TICKET_ASSIGNED_TO_YOU' | 'TICKET_ASSIGNED_NOTICE' | 'TICKET_REPLY' | 'TICKET_RESOLVED' | 'TICKET_CLOSED' | 'TICKET_CREATED'
 export interface AppNotification { id: number; type: NotificationType; title: string; body: string; ticketId?: number; read: boolean; createdAt: string }
 export interface TicketAttachment { id: string; name: string; contentType: string; sizeBytes: number; url: string; createdAt: string }

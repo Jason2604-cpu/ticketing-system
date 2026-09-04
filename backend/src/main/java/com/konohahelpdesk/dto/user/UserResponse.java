@@ -1,6 +1,7 @@
 package com.konohahelpdesk.dto.user;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.konohahelpdesk.dto.rbac.RoleResponse;
 import com.konohahelpdesk.model.user.Roles;
 import com.konohahelpdesk.model.user.User;
 import com.konohahelpdesk.model.user.UserStatus;
@@ -28,6 +29,8 @@ public class UserResponse {
     private java.util.List<CompanyRef> assignedCompanies;
     /** Additive RBAC: roles granted on top of the primary role, e.g. an ENGINEER also granted ADMIN. */
     private java.util.List<Roles> additionalRoles;
+    /** Role Management: admin-created custom roles (with their privileges) granted to this user. */
+    private java.util.List<RoleResponse.Ref> customRoles;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
@@ -68,6 +71,8 @@ public class UserResponse {
     public void setAssignedCompanies(java.util.List<CompanyRef> assignedCompanies) { this.assignedCompanies = assignedCompanies; }
     public java.util.List<Roles> getAdditionalRoles() { return additionalRoles; }
     public void setAdditionalRoles(java.util.List<Roles> additionalRoles) { this.additionalRoles = additionalRoles; }
+    public java.util.List<RoleResponse.Ref> getCustomRoles() { return customRoles; }
+    public void setCustomRoles(java.util.List<RoleResponse.Ref> customRoles) { this.customRoles = customRoles; }
 
     public record CompanyRef(Long id, String name) {}
     public LocalDateTime getCreatedAt() { return createdAt; }

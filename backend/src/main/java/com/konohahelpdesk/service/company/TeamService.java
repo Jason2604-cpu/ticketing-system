@@ -103,6 +103,29 @@ public class TeamService {
         return UserResponse.from(userRepository.save(user));
     }
 
+    /**
+     * Toggle a customer-side member between CUSTOMER and CUSTOMER_ADMIN. This is a primary-role
+     * change (the two are mutually exclusive tiers, never held together — see RoleService), not an
+     * additive grant. Shared by the admin-side Users page and the customer-side Team Members tab,
+     * so whichever side flips it, the other reflects it as soon as it re-fetches.
+     */
+    @Transactional
+    public UserResponse setAdmin(Long companyId, Long userId, boolean admin, User actor) {
+        if (userId.equals(actor.getId())) {
+            throw new BusinessRuleException("You cannot change your own Company Admin status");
+        }
+        User user = loadMember(companyId, userId);
+        if (user.getRole() != Roles.CUSTOMER && user.getRole() != Roles.CUSTOMER_ADMIN) {
+            throw new BusinessRuleException("Only customer-side users can be toggled between Customer and Company Admin");
+        }
+        Roles next = admin ? Roles.CUSTOMER_ADMIN : Roles.CUSTOMER;
+        if (user.getRole() == next) return UserResponse.from(user);
+        user.setRole(next);
+        User saved = userRepository.save(user);
+        audit.event("TEAM_MEMBER_ADMIN_TOGGLED", "companyId=" + companyId + " userId=" + userId + " admin=" + admin);
+        return UserResponse.from(saved);
+    }
+
     private User loadMember(Long companyId, Long userId) {
         User user = userRepository.findByIdAndStatusNot(userId, UserStatus.IS_DELETED)
             .orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));

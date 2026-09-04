@@ -20,6 +20,7 @@ export const usersApi = {
   },
   setCompanies: (id: number, companyIds: number[]) => api.put<{ id: number; name: string }[]>(`/users/${id}/companies`, companyIds),
   setRoles: (id: number, roles: Role[]) => api.put<User>(`/users/${id}/roles`, roles),
+  setCustomRoles: (id: number, roleIds: number[]) => api.put<User>(`/users/${id}/custom-roles`, roleIds),
 }
 
 /** Company-scoped team management (CUSTOMER_ADMIN for own company, ADMIN for any). */
@@ -28,6 +29,7 @@ export const teamApi = {
   invite: (companyId: number, body: InviteTeamMemberRequest) => api.post<User>(`/companies/${companyId}/users`, body),
   resendInvite: (companyId: number, userId: number) => api.post<void>(`/companies/${companyId}/users/${userId}/resend-invite`),
   setStatus: (companyId: number, userId: number, status: UserStatus) => api.patch<User>(`/companies/${companyId}/users/${userId}/status?status=${status}`),
+  setAdmin: (companyId: number, userId: number, admin: boolean) => api.patch<User>(`/companies/${companyId}/users/${userId}/admin?admin=${admin}`),
   engineers: (companyId: number) => api.get<User[]>(`/companies/${companyId}/engineers`),
 }
 
