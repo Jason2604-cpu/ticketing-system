@@ -17,6 +17,8 @@ export interface User {
   notifications?: NotificationPreferences
   /** Engineers/admins only (admin listing): companies they look after. */
   assignedCompanies?: { id: number; name: string }[]
+  /** Additive RBAC: roles granted on top of `role`, e.g. an ENGINEER also granted ADMIN. */
+  additionalRoles?: Role[]
   createdAt: string
   updatedAt: string
 }
