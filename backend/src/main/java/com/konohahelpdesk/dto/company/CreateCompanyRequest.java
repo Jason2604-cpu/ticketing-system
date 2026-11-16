@@ -31,6 +31,13 @@ public class CreateCompanyRequest {
     /** Engineer/admin notified on every new ticket for this company. Optional — null clears it. */
     private Long mainEngineerId;
 
+    /** Null = leave as-is (update) or use the Mon–Fri 09:00–18:00 defaults (create). */
+    @Valid
+    private java.util.List<BusinessHoursDto> businessHours;
+
+    /** When true the SLA clock only runs inside {@link #businessHours}. */
+    private Boolean businessHoursEnabled;
+
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
     public String getAddress() { return address; }
@@ -43,4 +50,9 @@ public class CreateCompanyRequest {
     public void setSubscription(CompanySubscriptionRequest subscription) { this.subscription = subscription; }
     public Long getMainEngineerId() { return mainEngineerId; }
     public void setMainEngineerId(Long mainEngineerId) { this.mainEngineerId = mainEngineerId; }
+
+    public java.util.List<BusinessHoursDto> getBusinessHours() { return businessHours; }
+    public void setBusinessHours(java.util.List<BusinessHoursDto> businessHours) { this.businessHours = businessHours; }
+    public Boolean getBusinessHoursEnabled() { return businessHoursEnabled; }
+    public void setBusinessHoursEnabled(Boolean businessHoursEnabled) { this.businessHoursEnabled = businessHoursEnabled; }
 }

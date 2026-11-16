@@ -37,3 +37,18 @@ npm-debug.log*
 # ===== OS =====
 .DS_Store
 Thumbs.db
+
+# Uploaded media (photos, logos, attachments) — lives outside git. Anchored to the folders the app
+# writes to (MEDIA_PATH defaults to ./media): a bare "media/" also matched the Java packages
+# model/media, service/media, controller/media and repository/media, so they were never committed.
+/media/
+/backend/media/
+
+# TLS certificates for the edge nginx (DEPLOYMENT.md step 9)
+nginx/certs/*
+!nginx/certs/.gitkeep
+
+# Database dumps / backups
+*.dump
+backups/
+"Claude outputs/" 

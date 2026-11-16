@@ -1,6 +1,6 @@
 import { useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Bell, Building2, Crown, Lock, MailCheck, Plus, Save, Shield, User as UserIcon, UserCheck, Users, UserX } from 'lucide-react'
+import { Bell, Building2, Lock, MailCheck, Plus, Save, Shield, User as UserIcon, UserCheck, Users, UserX } from 'lucide-react'
 import { Topbar } from '../../components/layout/Topbar'
 import { Page } from '../../components/layout/AppShell'
 import { Card, CardBody } from '../../components/ui/Card'
@@ -44,7 +44,7 @@ export default function SettingsPage() {
     <>
       <Topbar title={isClient ? 'Settings' : 'My Profile'} subtitle={subtitle} search={false} newTicket={isClient} />
       <div className="flex min-h-0 flex-1">
-        <aside className="w-56 shrink-0 border-r border-line bg-white p-3">
+        <aside className="w-56 shrink-0 border-r border-line bg-surface p-3">
           {tabs.filter((t) => t.show).map((t) => (
             <button key={t.key} onClick={() => setTab(t.key)} className={cn('flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium', tab === t.key ? 'bg-brand-50 text-brand-600' : 'text-gray-700 hover:bg-gray-50')}>
               {t.icon} {t.label}
@@ -134,7 +134,7 @@ function TeamTab({ companyId }: { companyId: number }) {
         {sub && (
           <div className="mb-4 rounded-lg bg-gray-50 p-4">
             <div className="flex justify-between text-sm"><span className="font-medium">Seats used</span><span>{used} / {max}</span></div>
-            <ProgressBar value={used} max={max} color="#111827" className="mt-2" />
+            <ProgressBar value={used} max={max} neutral className="mt-2" />
           </div>
         )}
         <div className="divide-y divide-line">
@@ -227,7 +227,7 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
   return (
     <button type="button" role="switch" aria-checked={checked} onClick={() => onChange(!checked)}
       className={cn('relative h-6 w-11 shrink-0 rounded-full transition-colors', checked ? 'bg-brand-600' : 'bg-gray-200')}>
-      <span className={cn('absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform', checked ? 'left-0.5 translate-x-5' : 'left-0.5')} />
+      <span className={cn('absolute top-0.5 h-5 w-5 rounded-full bg-surface shadow transition-transform', checked ? 'left-0.5 translate-x-5' : 'left-0.5')} />
     </button>
   )
 }

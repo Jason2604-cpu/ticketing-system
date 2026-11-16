@@ -11,10 +11,11 @@ import { isValidEmail } from '../../lib/countries'
 import { Alert } from '../../components/ui/Misc'
 import { useToast } from '../../components/ui/useToast'
 import { SubscriptionEditor } from './SubscriptionEditor'
+import { BusinessHoursEditor, businessHoursValid, defaultBusinessHours } from '../../components/ui/BusinessHoursEditor'
 import { companiesApi } from '../../api/companies'
 import { usersApi } from '../../api/users'
 import { errorMessage, isApiError } from '../../lib/api'
-import type { CompanySubscriptionRequest } from '../../types'
+import type { BusinessHours, CompanySubscriptionRequest } from '../../types'
 
 export default function CompanyFormPage() {
   const navigate = useNavigate()
@@ -26,19 +27,22 @@ export default function CompanyFormPage() {
   const [contactPhone, setContactPhone] = useState('')
   const [mainEngineerId, setMainEngineerId] = useState('')
   const [subscription, setSubscription] = useState<CompanySubscriptionRequest>({ subscriptionType: 'PREDEFINED' })
+  const [businessHoursEnabled, setBusinessHoursEnabled] = useState(true)
+  const [businessHours, setBusinessHours] = useState<BusinessHours[]>(defaultBusinessHours)
 
   const staff = useQuery({ queryKey: ['users', 'all'], queryFn: () => usersApi.list() })
   const engineerOptions = (staff.data ?? []).filter((u) => u.role === 'ENGINEER' || u.role === 'ADMIN')
 
   const create = useMutation({
-    mutationFn: () => companiesApi.create({ name, address: address || undefined, contactEmail: contactEmail || undefined, contactPhone: contactPhone || undefined, subscription, mainEngineerId: mainEngineerId ? Number(mainEngineerId) : undefined }),
+    mutationFn: () => companiesApi.create({ name, address: address || undefined, contactEmail: contactEmail || undefined, contactPhone: contactPhone || undefined, subscription, mainEngineerId: mainEngineerId ? Number(mainEngineerId) : undefined, businessHoursEnabled, businessHours }),
     onSuccess: (c) => { void qc.invalidateQueries({ queryKey: ['companies'] }); toast(`${c.name} created`); navigate(`/companies/${c.id}`) },
   })
   const fields = isApiError(create.error) ? create.error.fields ?? {} : {}
 
   const [touched, setTouched] = useState(false)
   const emailOk = !contactEmail || isValidEmail(contactEmail)
-  const submit = (e: FormEvent) => { e.preventDefault(); setTouched(true); if (emailOk) create.mutate() }
+  const hoursOk = businessHoursValid(businessHours)
+  const submit = (e: FormEvent) => { e.preventDefault(); setTouched(true); if (emailOk && hoursOk) create.mutate() }
 
   return (
     <>
@@ -63,13 +67,25 @@ export default function CompanyFormPage() {
           </Card>
 
           <Card>
+            <CardHeader title="Business Hours" action={<span className="text-sm text-muted">Controls when the SLA clock runs</span>} />
+            <CardBody>
+              <BusinessHoursEditor
+                value={businessHours}
+                onChange={setBusinessHours}
+                enabled={businessHoursEnabled}
+                onEnabledChange={setBusinessHoursEnabled}
+              />
+            </CardBody>
+          </Card>
+
+          <Card>
             <CardHeader title="Subscription Selection" />
             <CardBody><SubscriptionEditor value={subscription} onChange={setSubscription} /></CardBody>
           </Card>
 
           <div className="flex justify-end gap-2">
             <Button type="button" variant="secondary" onClick={() => navigate(-1)}>Cancel</Button>
-            <Button type="submit" loading={create.isPending}>Create company</Button>
+            <Button type="submit" loading={create.isPending} disabled={!hoursOk}>Create company</Button>
           </div>
         </form>
       </Page>

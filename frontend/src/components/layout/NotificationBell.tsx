@@ -7,6 +7,10 @@ import { timeAgo } from '../../lib/format'
 import { cn } from '../../lib/cn'
 import type { AppNotification } from '../../types'
 
+/** Where a notification opens: its own in-app link (Knowledge Base, contracts), else its ticket. */
+const targetOf = (n: AppNotification) =>
+  n.link?.startsWith('/') ? n.link : n.ticketId ? `/tickets/${n.ticketId}` : null
+
 /** Reload-free notifications: polls the backend and pops a real browser notification for anything new. */
 export function NotificationBell() {
   const navigate = useNavigate()
@@ -15,7 +19,7 @@ export function NotificationBell() {
   const ref = useRef<HTMLDivElement>(null)
   const seen = useRef<Set<number> | null>(null) // null = not primed yet (first load shouldn't re-notify old items)
 
-  const { data = [] } = useQuery({ queryKey: ['notifications'], queryFn: notificationsApi.list, refetchInterval: 10_000 })
+  const { data = [] } = useQuery({ queryKey: ['notifications'], queryFn: notificationsApi.list, refetchInterval: 20_000 })
   const unread = data.filter((n) => !n.read).length
 
   const markRead = useMutation({ mutationFn: notificationsApi.markRead, onSuccess: () => void qc.invalidateQueries({ queryKey: ['notifications'] }) })
@@ -35,15 +39,19 @@ export function NotificationBell() {
       return
     }
     const fresh = data.filter((n) => !n.read && !seen.current!.has(n.id))
+    // A publish request or decision changes the "Needs publishing" count and the article lists.
+    if (fresh.some((n) => n.type === 'KB_PUBLISH_REQUESTED' || n.type === 'KB_PUBLISH_DECIDED')) {
+      void qc.invalidateQueries({ queryKey: ['kb', 'manage'] })
+    }
     for (const n of fresh) {
       seen.current.add(n.id)
       if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
         const browserNotif = new Notification(n.title, { body: n.body, tag: `ticket-notif-${n.id}` })
-        browserNotif.onclick = () => { window.focus(); if (n.ticketId) navigate(`/tickets/${n.ticketId}`) }
+        browserNotif.onclick = () => { window.focus(); const to = targetOf(n); if (to) navigate(to) }
       }
     }
     for (const n of data) seen.current.add(n.id)
-  }, [data, navigate])
+  }, [data, navigate, qc])
 
   const toggle = () => {
     if (!open && typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
@@ -55,7 +63,8 @@ export function NotificationBell() {
   const openItem = (n: AppNotification) => {
     if (!n.read) markRead.mutate(n.id)
     setOpen(false)
-    if (n.ticketId) navigate(`/tickets/${n.ticketId}`)
+    const to = targetOf(n)
+    if (to) navigate(to)
   }
 
   return (
@@ -63,13 +72,13 @@ export function NotificationBell() {
       <button onClick={toggle} className="relative rounded-lg p-2 text-gray-600 hover:bg-gray-100" aria-label="Notifications">
         <Bell size={18} />
         {unread > 0 && (
-          <span className="absolute right-1 top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-semibold text-white ring-2 ring-white">
+          <span className="absolute right-1 top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-semibold text-white ring-2 ring-surface">
             {unread > 9 ? '9+' : unread}
           </span>
         )}
       </button>
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-2 w-80 rounded-xl border border-line bg-white shadow-lg">
+        <div className="absolute right-0 top-full z-50 mt-2 w-80 rounded-xl border border-line bg-surface shadow-lg">
           <div className="flex items-center justify-between border-b border-line px-4 py-3">
             <p className="text-sm font-semibold">Notifications</p>
             {unread > 0 && (

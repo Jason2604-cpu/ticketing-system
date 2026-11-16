@@ -1,0 +1,1621 @@
+diff --git a/backend/src/main/java/com/konohahelpdesk/config/SecurityConfig.java b/backend/src/main/java/com/konohahelpdesk/config/SecurityConfig.java
+index 4d272ea..6dac077 100755
+--- a/backend/src/main/java/com/konohahelpdesk/config/SecurityConfig.java
++++ b/backend/src/main/java/com/konohahelpdesk/config/SecurityConfig.java
+@@ -110,8 +110,10 @@ public class SecurityConfig {
+                 // password (JwtCookieFilter gives them no role, so everything below is closed to them).
+                 .requestMatchers(HttpMethod.GET, "/api/auth/me").authenticated()
+                 .requestMatchers(HttpMethod.POST, "/api/auth/change-password", "/api/auth/logout").authenticated()
+-                // Every other route needs an ACTIVE user with a real role; fine-grained checks are @PreAuthorize on controllers.
+-                .requestMatchers("/api/**").hasAnyRole("ADMIN", "ENGINEER", "CUSTOMER_ADMIN", "CUSTOMER")
++                // Every other route needs an ACTIVE user with a role; fine-grained checks are @PreAuthorize on
++                // controllers. STAFF (the Default employee role) passes this gate but every module controller
++                // shuts it out unless a custom role grants the matching PRIV_* (tickets/reports: never).
++                .requestMatchers("/api/**").hasAnyRole("ADMIN", "ENGINEER", "CUSTOMER_ADMIN", "CUSTOMER", "STAFF")
+                 .anyRequest().denyAll()
+             )
+ 
+diff --git a/backend/src/main/java/com/konohahelpdesk/config/UserCodeMigrationSeeder.java b/backend/src/main/java/com/konohahelpdesk/config/UserCodeMigrationSeeder.java
+index df446da..f41ba0f 100755
+--- a/backend/src/main/java/com/konohahelpdesk/config/UserCodeMigrationSeeder.java
++++ b/backend/src/main/java/com/konohahelpdesk/config/UserCodeMigrationSeeder.java
+@@ -54,7 +54,7 @@ public class UserCodeMigrationSeeder implements ApplicationRunner {
+ 
+         int migrated = 0;
+         for (User u : all) {
+-            boolean staff = u.getRole() == Roles.ADMIN || u.getRole() == Roles.ENGINEER;
++            boolean staff = u.getRole().isStaffSide();
+             if (staff && !EMP_PATTERN.matcher(u.getUserCode()).matches()) {
+                 String code;
+                 do { code = String.format("EMP%05d", ++empSeq); } while (userRepository.existsByUserCode(code));
+diff --git a/backend/src/main/java/com/konohahelpdesk/controller/auth/AuthController.java b/backend/src/main/java/com/konohahelpdesk/controller/auth/AuthController.java
+index ace72a1..fde8f44 100755
+--- a/backend/src/main/java/com/konohahelpdesk/controller/auth/AuthController.java
++++ b/backend/src/main/java/com/konohahelpdesk/controller/auth/AuthController.java
+@@ -76,7 +76,7 @@ public class AuthController {
+     @GetMapping("/me")
+     public ResponseEntity<UserResponse> me() {
+         User user = currentUser.get();
+-        // Goes through UserService (not a bare UserResponse.from) so additionalRoles/customRoles —
++        // Goes through UserService (not a bare UserResponse.from) so customRoles —
+         // and the privileges they carry — are populated; the frontend needs them to decide what
+         // this user can see, same as the admin user listing does.
+         UserResponse me = userService.getById(user.getId());
+diff --git a/backend/src/main/java/com/konohahelpdesk/controller/company/CompanyController.java b/backend/src/main/java/com/konohahelpdesk/controller/company/CompanyController.java
+index 96c3c17..935a29f 100755
+--- a/backend/src/main/java/com/konohahelpdesk/controller/company/CompanyController.java
++++ b/backend/src/main/java/com/konohahelpdesk/controller/company/CompanyController.java
+@@ -58,7 +58,10 @@ public class CompanyController {
+     }
+ 
+     @GetMapping
+-    @PreAuthorize("hasAnyRole('ADMIN','ENGINEER')")
++    // The company pickers on the Users, Contracts, Assets and Templates pages need this list too, so
++    // a Default employee holding one of those privileges (via a custom role) can use those pages.
++    @PreAuthorize("hasAnyRole('ADMIN','ENGINEER') or hasAnyAuthority('PRIV_MANAGE_COMPANIES','PRIV_MANAGE_USERS',"
++        + "'PRIV_MANAGE_CONTRACTS','PRIV_MANAGE_ASSETS','PRIV_MANAGE_TEMPLATES')")
+     public ResponseEntity<List<CompanyResponse>> list() {
+         return ResponseEntity.ok(companyService.list(currentUser.get()));
+     }
+diff --git a/backend/src/main/java/com/konohahelpdesk/controller/report/ReportController.java b/backend/src/main/java/com/konohahelpdesk/controller/report/ReportController.java
+index 9f7ce43..294b45e 100755
+--- a/backend/src/main/java/com/konohahelpdesk/controller/report/ReportController.java
++++ b/backend/src/main/java/com/konohahelpdesk/controller/report/ReportController.java
+@@ -3,6 +3,7 @@ package com.konohahelpdesk.controller.report;
+ import com.konohahelpdesk.dto.report.ReportResponse;
+ import com.konohahelpdesk.security.CurrentUser;
+ import com.konohahelpdesk.service.report.ReportService;
++import org.springframework.security.access.prepost.PreAuthorize;
+ import org.springframework.format.annotation.DateTimeFormat;
+ import org.springframework.http.HttpHeaders;
+ import org.springframework.http.MediaType;
+@@ -23,6 +24,9 @@ import java.time.LocalDate;
+  */
+ @RestController
+ @RequestMapping("/api/reports")
++// Not for the Default employee role (STAFF): tickets and reports are engineer/admin/customer work,
++// and the service code scopes everything by those roles. Method-level @PreAuthorize below overrides.
++@PreAuthorize("hasAnyRole('ADMIN','ENGINEER','CUSTOMER_ADMIN','CUSTOMER')")
+ public class ReportController {
+ 
+     private final ReportService reports;
+diff --git a/backend/src/main/java/com/konohahelpdesk/controller/ticket/TicketController.java b/backend/src/main/java/com/konohahelpdesk/controller/ticket/TicketController.java
+index 4b53159..b513cc5 100755
+--- a/backend/src/main/java/com/konohahelpdesk/controller/ticket/TicketController.java
++++ b/backend/src/main/java/com/konohahelpdesk/controller/ticket/TicketController.java
+@@ -21,6 +21,9 @@ import java.util.Map;
+ 
+ @RestController
+ @RequestMapping("/api/tickets")
++// Not for the Default employee role (STAFF): tickets and reports are engineer/admin/customer work,
++// and the service code scopes everything by those roles. Method-level @PreAuthorize below overrides.
++@PreAuthorize("hasAnyRole('ADMIN','ENGINEER','CUSTOMER_ADMIN','CUSTOMER')")
+ public class TicketController {
+ 
+     private final TicketService tickets;
+@@ -56,7 +59,8 @@ public class TicketController {
+     }
+ 
+     @GetMapping("/assignees")
+-    @PreAuthorize("hasAnyRole('ADMIN','ENGINEER')")
++    // Also the "owner" picker on the contract form, so a contract manager without an engineer role can use it.
++    @PreAuthorize("hasAnyRole('ADMIN','ENGINEER') or hasAuthority('PRIV_MANAGE_CONTRACTS')")
+     public ResponseEntity<List<UserResponse>> assignees() {
+         return ResponseEntity.ok(tickets.assignees());
+     }
+diff --git a/backend/src/main/java/com/konohahelpdesk/controller/user/UserController.java b/backend/src/main/java/com/konohahelpdesk/controller/user/UserController.java
+index 92b51a4..a1a79cc 100755
+--- a/backend/src/main/java/com/konohahelpdesk/controller/user/UserController.java
++++ b/backend/src/main/java/com/konohahelpdesk/controller/user/UserController.java
+@@ -43,10 +43,10 @@ public class UserController {
+      * NOTE ON THE TWO @PreAuthorize OVERRIDES BELOW.
+      *
+      * Everything else on this controller is "ADMIN or MANAGE_USERS". Role granting is not, and
+-     * cannot be: these two endpoints are how a user's authorities are set, so anyone who can call
+-     * them can call them on THEMSELVES and walk straight up to full admin — grant yourself the
+-     * additive ADMIN role, or grant yourself a custom role carrying every privilege. That made
+-     * MANAGE_USERS a synonym for ADMIN, which defeats the point of having a delegable privilege.
++     * cannot be: the roles endpoint is how a user's authorities are set, so anyone who can call
++     * it can call it on THEMSELVES and walk straight up to full admin — tick Admin for yourself,
++     * or grant yourself a custom role carrying every privilege. That made MANAGE_USERS a synonym
++     * for ADMIN, which defeats the point of having a delegable privilege.
+      *
+      * A holder of MANAGE_USERS can still invite, edit, deactivate and remove users. They just
+      * cannot change who holds which role. RoleService additionally refuses to act on your own
+@@ -59,18 +59,14 @@ public class UserController {
+         return ResponseEntity.ok(assignments.setCompaniesForEngineer(id, companyIds == null ? java.util.Set.of() : companyIds));
+     }
+ 
+-    /** Replace the additive roles granted to a user, on top of their primary role (e.g. grant an ENGINEER admin privileges too). */
++    /**
++     * An employee's roles, all at once: Admin / Engineer (nothing ticked = Default) plus custom
++     * roles. Customers aren't handled here — they switch between Customer and Company Admin.
++     */
+     @PreAuthorize("hasRole('ADMIN')")
+     @PutMapping("/{id}/roles")
+-    public ResponseEntity<UserResponse> setRoles(@PathVariable Long id, @RequestBody java.util.Set<Roles> roles) {
+-        return ResponseEntity.ok(userService.setAdditionalRoles(id, roles == null ? java.util.Set.of() : roles));
+-    }
+-
+-    /** Replace the custom (Role Management) roles granted to a user — staff only. */
+-    @PreAuthorize("hasRole('ADMIN')")
+-    @PutMapping("/{id}/custom-roles")
+-    public ResponseEntity<UserResponse> setCustomRoles(@PathVariable Long id, @RequestBody java.util.Set<Long> roleIds) {
+-        return ResponseEntity.ok(userService.setCustomRoles(id, roleIds == null ? java.util.Set.of() : roleIds));
++    public ResponseEntity<UserResponse> setRoles(@PathVariable Long id, @RequestBody com.konohahelpdesk.dto.user.SetRolesRequest request) {
++        return ResponseEntity.ok(userService.setRoles(id, request.getRoles(), request.getCustomRoleIds()));
+     }
+ 
+     @PostMapping
+diff --git a/backend/src/main/java/com/konohahelpdesk/dto/user/SetRolesRequest.java b/backend/src/main/java/com/konohahelpdesk/dto/user/SetRolesRequest.java
+new file mode 100644
+index 0000000..742dfc1
+--- /dev/null
++++ b/backend/src/main/java/com/konohahelpdesk/dto/user/SetRolesRequest.java
+@@ -0,0 +1,22 @@
++package com.konohahelpdesk.dto.user;
++
++import com.konohahelpdesk.model.user.Roles;
++
++import java.util.Set;
++
++/**
++ * Body of PUT /api/users/{id}/roles — the Users page "Roles" checkboxes for an employee.
++ *
++ * {@code roles}: ADMIN and/or ENGINEER (Admin includes Engineer); empty = the Default role.
++ * {@code customRoleIds}: Role Management roles to grant (ignored for an Admin, who has everything).
++ */
++public class SetRolesRequest {
++
++    private Set<Roles> roles = Set.of();
++    private Set<Long> customRoleIds = Set.of();
++
++    public Set<Roles> getRoles() { return roles; }
++    public void setRoles(Set<Roles> roles) { this.roles = roles == null ? Set.of() : roles; }
++    public Set<Long> getCustomRoleIds() { return customRoleIds; }
++    public void setCustomRoleIds(Set<Long> customRoleIds) { this.customRoleIds = customRoleIds == null ? Set.of() : customRoleIds; }
++}
+diff --git a/backend/src/main/java/com/konohahelpdesk/dto/user/UserResponse.java b/backend/src/main/java/com/konohahelpdesk/dto/user/UserResponse.java
+index 015e3e5..5646fda 100755
+--- a/backend/src/main/java/com/konohahelpdesk/dto/user/UserResponse.java
++++ b/backend/src/main/java/com/konohahelpdesk/dto/user/UserResponse.java
+@@ -36,8 +36,6 @@ public class UserResponse {
+     private java.util.List<String> companyFeatures;
+     /** Engineers only: companies they look after. Populated by the admin listing. */
+     private java.util.List<CompanyRef> assignedCompanies;
+-    /** Additive RBAC: roles granted on top of the primary role, e.g. an ENGINEER also granted ADMIN. */
+-    private java.util.List<Roles> additionalRoles;
+     /** Role Management: admin-created custom roles (with their privileges) granted to this user. */
+     private java.util.List<RoleResponse.Ref> customRoles;
+     private LocalDateTime createdAt;
+@@ -83,8 +81,6 @@ public class UserResponse {
+     public boolean isMustChangePassword() { return mustChangePassword; }
+     public java.util.List<CompanyRef> getAssignedCompanies() { return assignedCompanies; }
+     public void setAssignedCompanies(java.util.List<CompanyRef> assignedCompanies) { this.assignedCompanies = assignedCompanies; }
+-    public java.util.List<Roles> getAdditionalRoles() { return additionalRoles; }
+-    public void setAdditionalRoles(java.util.List<Roles> additionalRoles) { this.additionalRoles = additionalRoles; }
+     public java.util.List<RoleResponse.Ref> getCustomRoles() { return customRoles; }
+     public void setCustomRoles(java.util.List<RoleResponse.Ref> customRoles) { this.customRoles = customRoles; }
+ 
+diff --git a/backend/src/main/java/com/konohahelpdesk/model/user/Roles.java b/backend/src/main/java/com/konohahelpdesk/model/user/Roles.java
+index d5e5bd6..c577265 100755
+--- a/backend/src/main/java/com/konohahelpdesk/model/user/Roles.java
++++ b/backend/src/main/java/com/konohahelpdesk/model/user/Roles.java
+@@ -7,7 +7,13 @@ public enum Roles {
+         ENGINEER("Engineer"),
+         ADMIN("Admin"),
+         CUSTOMER_ADMIN("Customer Admin"),
+-        CUSTOMER("Customer");
++        CUSTOMER("Customer"),
++        /**
++         * An employee with the Default role: can sign in, but no module is open to them until an
++         * admin ticks Engineer / Admin, or grants a custom role (Role Management) whose privileges
++         * open specific admin pages. Staff side (EMPxxxxx code), never linked to a company.
++         */
++        STAFF("Default");
+ 
+         private final String displayName;
+ 
+@@ -19,6 +25,16 @@ public enum Roles {
+             return displayName;
+         }
+ 
++        /** Employees of the service provider: Admin, Engineer and Default (EMPxxxxx codes). */
++        public boolean isStaffSide() {
++            return this == ADMIN || this == ENGINEER || this == STAFF;
++        }
++
++        /** The customer's people: Company Admin and Customer (CUSxxxxxx codes, always linked to a company). */
++        public boolean isCustomerSide() {
++            return this == CUSTOMER_ADMIN || this == CUSTOMER;
++        }
++
+         /**
+          * Always serialize as the constant name ("ADMIN"), never the display name.
+          * Jackson 3 defaults to toString() for enums, which would otherwise emit "Admin".
+diff --git a/backend/src/main/java/com/konohahelpdesk/repository/company/CompanyRepository.java b/backend/src/main/java/com/konohahelpdesk/repository/company/CompanyRepository.java
+index a86f46f..48a3184 100755
+--- a/backend/src/main/java/com/konohahelpdesk/repository/company/CompanyRepository.java
++++ b/backend/src/main/java/com/konohahelpdesk/repository/company/CompanyRepository.java
+@@ -14,4 +14,9 @@ public interface CompanyRepository extends JpaRepository<Company, Long> {
+     /** Ids only — "every company" report scope, without loading each company's graph. */
+     @org.springframework.data.jpa.repository.Query("select c.id from Company c")
+     java.util.List<Long> findAllIds();
++
++    /** Frees every company whose main engineer is this user (they moved to the Default role). */
++    @org.springframework.data.jpa.repository.Modifying
++    @org.springframework.data.jpa.repository.Query("update Company c set c.mainEngineer = null where c.mainEngineer.id = :userId")
++    int clearMainEngineer(@org.springframework.data.repository.query.Param("userId") Long userId);
+ }
+diff --git a/backend/src/main/java/com/konohahelpdesk/security/CurrentUser.java b/backend/src/main/java/com/konohahelpdesk/security/CurrentUser.java
+index ba8db35..fae41a0 100755
+--- a/backend/src/main/java/com/konohahelpdesk/security/CurrentUser.java
++++ b/backend/src/main/java/com/konohahelpdesk/security/CurrentUser.java
+@@ -53,8 +53,24 @@ public class CurrentUser {
+                         || "PRIV_MANAGE_ASSETS".equals(a.getAuthority()));
+     }
+ 
++    /** Custom-role privileges whose pages work across every customer company (and need its pickers). */
++    private static final java.util.Set<String> COMPANY_WIDE_PRIVILEGES = java.util.Set.of(
++        "PRIV_MANAGE_COMPANIES", "PRIV_MANAGE_USERS", "PRIV_MANAGE_CONTRACTS", "PRIV_MANAGE_ASSETS", "PRIV_MANAGE_TEMPLATES");
++
+     /**
+-     * ADMIN and ENGINEER may act on any company. CUSTOMER_ADMIN / CUSTOMER only on their own.
++     * True when the signed-in user holds, through a custom role, a privilege that works across all
++     * customer companies. This is what lets a Default employee (role STAFF) who was given, say,
++     * "Manage Contracts" see the companies those pages pick from — and nothing more.
++     */
++    public boolean hasCompanyWidePrivilege() {
++        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
++        if (auth == null) return false;
++        return auth.getAuthorities().stream().anyMatch(a -> COMPANY_WIDE_PRIVILEGES.contains(a.getAuthority()));
++    }
++
++    /**
++     * ADMIN and ENGINEER may act on any company; a Default employee only with a company-wide
++     * privilege (see above). CUSTOMER_ADMIN / CUSTOMER only on their own.
+      * Prevents IDOR: a customer guessing another company's id gets 403, not data.
+      */
+     public void requireCompanyAccess(Long companyId) {
+@@ -62,6 +78,10 @@ public class CurrentUser {
+         if (user.getRole() == Roles.ADMIN || user.getRole() == Roles.ENGINEER) {
+             return;
+         }
++        if (user.getRole() == Roles.STAFF) {
++            if (hasCompanyWidePrivilege()) return;
++            throw new AccessDeniedException("Forbidden");
++        }
+         if (user.getCompany() == null || !user.getCompany().getId().equals(companyId)) {
+             throw new AccessDeniedException("Forbidden");
+         }
+diff --git a/backend/src/main/java/com/konohahelpdesk/security/JwtCookieFilter.java b/backend/src/main/java/com/konohahelpdesk/security/JwtCookieFilter.java
+index 54346f2..9bb45cb 100755
+--- a/backend/src/main/java/com/konohahelpdesk/security/JwtCookieFilter.java
++++ b/backend/src/main/java/com/konohahelpdesk/security/JwtCookieFilter.java
+@@ -88,11 +88,10 @@ public class JwtCookieFilter extends OncePerRequestFilter {
+     }
+ 
+     /**
+-     * Null means "do not authenticate". Includes the user's primary role, any additive system
+-     * roles granted via the Roles/UserRoles tables (see RoleService) — an ENGINEER granted ADMIN
+-     * gets both ROLE_ENGINEER and ROLE_ADMIN, satisfying @PreAuthorize checks for either — and,
+-     * for every custom (Role Management) role granted, a PRIV_* authority per privilege it carries.
+-     * Real enforcement: a custom role's ticked privileges only ever add access, never a label.
++     * Null means "do not authenticate". One ROLE_* for the user's role (ADMIN, ENGINEER, STAFF =
++     * Default, CUSTOMER_ADMIN, CUSTOMER) plus, for every custom (Role Management) role granted, a
++     * PRIV_* authority per privilege it carries. Real enforcement: a custom role's ticked
++     * privileges only ever add access, never a label.
+      */
+     private List<GrantedAuthority> authoritiesFor(User user) {
+         if (user.getStatus() != UserStatus.ACTIVE) {
+@@ -107,12 +106,11 @@ public class JwtCookieFilter extends OncePerRequestFilter {
+         java.util.LinkedHashSet<GrantedAuthority> authorities = new java.util.LinkedHashSet<>();
+         authorities.add(new SimpleGrantedAuthority("ROLE_" + user.getRole().name()));
+         for (Role role : userRoleRepository.findRolesWithPrivilegesByUserId(user.getId())) {
+-            if (role.isCustom()) {
+-                for (Privilege p : role.getPrivileges()) {
+-                    authorities.add(new SimpleGrantedAuthority("PRIV_" + p.name()));
+-                }
+-            } else {
+-                authorities.add(new SimpleGrantedAuthority("ROLE_" + role.getName()));
++            // Only custom roles carry privileges. (System-role rows were never meant to be granted
++            // since V3; ignoring any that slip in keeps a stray row from escalating anyone.)
++            if (!role.isCustom()) continue;
++            for (Privilege p : role.getPrivileges()) {
++                authorities.add(new SimpleGrantedAuthority("PRIV_" + p.name()));
+             }
+         }
+         return List.copyOf(authorities);
+diff --git a/backend/src/main/java/com/konohahelpdesk/service/asset/AssetService.java b/backend/src/main/java/com/konohahelpdesk/service/asset/AssetService.java
+index 3290dec..f928ab7 100755
+--- a/backend/src/main/java/com/konohahelpdesk/service/asset/AssetService.java
++++ b/backend/src/main/java/com/konohahelpdesk/service/asset/AssetService.java
+@@ -422,7 +422,9 @@ public class AssetService {
+     }
+ 
+     private boolean isCustomer(User actor) {
+-        return actor.getRole() != Roles.ADMIN && actor.getRole() != Roles.ENGINEER;
++        // Not "anything but ADMIN/ENGINEER": a Default employee with Manage Assets is staff, and
++        // their company reach comes from CompanyScope, not from a plan feature.
++        return actor.getRole().isCustomerSide();
+     }
+ 
+     // ── helpers ──────────────────────────────────────────────────────────────
+diff --git a/backend/src/main/java/com/konohahelpdesk/service/company/CompanyScope.java b/backend/src/main/java/com/konohahelpdesk/service/company/CompanyScope.java
+index eab228c..9771068 100755
+--- a/backend/src/main/java/com/konohahelpdesk/service/company/CompanyScope.java
++++ b/backend/src/main/java/com/konohahelpdesk/service/company/CompanyScope.java
+@@ -32,10 +32,13 @@ public class CompanyScope {
+ 
+     private final CompanyRepository companies;
+     private final EngineerAssignmentService assignments;
++    private final com.konohahelpdesk.security.CurrentUser currentUser;
+ 
+-    public CompanyScope(CompanyRepository companies, EngineerAssignmentService assignments) {
++    public CompanyScope(CompanyRepository companies, EngineerAssignmentService assignments,
++                        com.konohahelpdesk.security.CurrentUser currentUser) {
+         this.companies = companies;
+         this.assignments = assignments;
++        this.currentUser = currentUser;
+     }
+ 
+     /**
+@@ -56,6 +59,12 @@ public class CompanyScope {
+             return assigned.isEmpty() ? null : assigned;
+         }
+ 
++        // Default employee: no company at all, unless a custom role gives them a privilege that works
++        // across companies (managing users, companies, contracts, assets or templates).
++        if (actor.getRole() == Roles.STAFF) {
++            return currentUser.hasCompanyWidePrivilege() ? null : List.of();
++        }
++
+         // Customer side: exactly their own company, and an account with none can't see anything.
+         Long own = actor.getCompany() == null ? null : actor.getCompany().getId();
+         if (own == null) throw new AccessDeniedException("Your account is not linked to a company");
+diff --git a/backend/src/main/java/com/konohahelpdesk/service/company/EngineerAssignmentService.java b/backend/src/main/java/com/konohahelpdesk/service/company/EngineerAssignmentService.java
+index 0af297a..1ad6a6f 100755
+--- a/backend/src/main/java/com/konohahelpdesk/service/company/EngineerAssignmentService.java
++++ b/backend/src/main/java/com/konohahelpdesk/service/company/EngineerAssignmentService.java
+@@ -66,6 +66,12 @@ public class EngineerAssignmentService {
+             .map(a -> new UserResponse.CompanyRef(a.getCompany().getId(), a.getCompany().getName())).toList();
+     }
+ 
++    /** Drops every company assignment of this user (they no longer hold an engineer role). */
++    @org.springframework.transaction.annotation.Transactional
++    public void clearForEngineer(Long engineerId) {
++        repository.deleteByEngineerId(engineerId);
++    }
++
+     /** The ids of the companies an engineer is assigned to (empty = unrestricted by convention). */
+     public List<Long> companyIdsForEngineer(Long engineerId) {
+         return repository.findCompanyIdsByEngineerId(engineerId);
+diff --git a/backend/src/main/java/com/konohahelpdesk/service/rbac/RoleService.java b/backend/src/main/java/com/konohahelpdesk/service/rbac/RoleService.java
+index 7f8ea95..aa44b0a 100755
+--- a/backend/src/main/java/com/konohahelpdesk/service/rbac/RoleService.java
++++ b/backend/src/main/java/com/konohahelpdesk/service/rbac/RoleService.java
+@@ -20,12 +20,22 @@ import java.util.*;
+ import java.util.stream.Collectors;
+ 
+ /**
+- * Additive RBAC: on top of a user's single primary {@code User.role} (which still drives
+- * {@code @PreAuthorize} checks and the default portal a user lands in), an ADMIN can grant extra
+- * roles — e.g. an ENGINEER can also be granted ADMIN privileges — and, separately, admin-created
+- * custom roles carrying hand-picked {@link com.konohahelpdesk.model.rbac.Privilege}s (Role
+- * Management). Both kinds of grant live in the same {@code UserRole} table, kept independent via
+- * the {@code role.custom} flag so replacing one set never touches the other.
++ * Who may do what.
++ *
++ * Employees (the EMPxxxxx side) hold exactly ONE system role, stored on {@code User.role}:
++ *  - ADMIN    — everything (it includes everything an Engineer can do),
++ *  - ENGINEER — works tickets for their assigned companies,
++ *  - STAFF    — "Default": signs in, no module at all.
++ * On top of that an employee can be granted admin-created custom roles (Role Management), each
++ * carrying hand-picked {@link com.konohahelpdesk.model.rbac.Privilege}s that open specific admin
++ * pages — e.g. a Default employee with a "Contract Manager" role sees Service Contracts only.
++ *
++ * Customers (CUSTOMER / CUSTOMER_ADMIN) never get custom roles; the two are mutually exclusive
++ * tiers switched with the Company Admin toggle (TeamService.setAdmin).
++ *
++ * (Before V3 an employee could also hold the other staff role as an "additional" grant. The
++ * service layer only ever read the primary role, so an Engineer granted Admin had admin pages
++ * but engineer-scoped data. V3 flattened those grants into the primary role.)
+  */
+ @Service
+ public class RoleService {
+@@ -43,69 +53,44 @@ public class RoleService {
+         this.audit = audit;
+     }
+ 
+-    // ── Fixed-enum additive roles (Admin <-> Engineer) ──────────────────────
+-
+-    /** The extra system roles granted to one user, beyond their primary role. */
+-    public List<Roles> additionalRoles(Long userId) {
+-        return userRoleRepository.findByUserIdAndRole_Custom(userId, false).stream()
+-            .map(ur -> Roles.valueOf(ur.getRole().getName()))
+-            .sorted()
+-            .toList();
+-    }
+-
+-    /** Batch form of {@link #additionalRoles(Long)} — one query for a whole user listing. */
+-    public Map<Long, List<Roles>> additionalRolesByUser(Collection<Long> userIds) {
+-        if (userIds.isEmpty()) return Map.of();
+-        Map<Long, List<Roles>> byUser = new HashMap<>();
+-        for (UserRole ur : userRoleRepository.findByUserIdInAndRole_Custom(userIds, false)) {
+-            byUser.computeIfAbsent(ur.getUser().getId(), k -> new ArrayList<>()).add(Roles.valueOf(ur.getRole().getName()));
+-        }
+-        byUser.replaceAll((id, roles) -> roles.stream().sorted().toList());
+-        return byUser;
+-    }
+-
++    // ── Employee roles: Admin / Engineer / Default + custom roles ──────────
+ 
+     /**
+-     * Which additive roles make sense on top of a given primary role. The two "sides" of the
+-     * merged user-code scheme behave differently:
+-     *  - Staff (ADMIN/ENGINEER, the EMPxxxxx side) can hold BOTH at once — that's the whole point
+-     *    of merging them, e.g. an ENGINEER can also be granted ADMIN privileges.
+-     *  - Customer-side (CUSTOMER/CUSTOMER_ADMIN, the CUSxxxxxx side) are mutually exclusive tiers
+-     *    of the same relationship — a user is never both at once, so no additive role applies here.
+-     *    Moving someone between them means changing their primary role, not granting an extra one.
++     * Saves the Users page "Roles" checkboxes in one go.
++     *
++     * {@code systemRoles} may contain ADMIN and/or ENGINEER; the stored role is the highest one
++     * ticked (Admin includes Engineer), and nothing ticked means Default (STAFF). Custom roles are
++     * replaced with {@code customRoleIds} — except for an Admin, who already holds every privilege,
++     * so any custom roles are dropped rather than kept as dead weight.
++     *
++     * @return the role the user had before, so the caller can tidy up engineer-only state
+      */
+-    private Set<Roles> allowedAdditionalRoles(Roles primary) {
+-        return switch (primary) {
+-            case ADMIN -> EnumSet.of(Roles.ENGINEER);
+-            case ENGINEER -> EnumSet.of(Roles.ADMIN);
+-            case CUSTOMER, CUSTOMER_ADMIN -> EnumSet.noneOf(Roles.class);
+-        };
+-    }
+-
+-    /** Replaces the full set of additive system roles for a user. The primary role is never stored here. */
+     @Transactional
+-    public void setAdditionalRoles(Long userId, Set<Roles> roles) {
++    public Roles setStaffRoles(Long userId, Set<Roles> systemRoles, Set<Long> customRoleIds) {
+         User user = userRepository.findById(userId)
+             .orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
+         assertNotSelf(userId);
+-        Set<Roles> desired = roles == null ? Set.of() : roles.stream().filter(r -> r != user.getRole()).collect(Collectors.toSet());
+-
+-        Set<Roles> allowed = allowedAdditionalRoles(user.getRole());
+-        Set<Roles> invalid = desired.stream().filter(r -> !allowed.contains(r)).collect(Collectors.toSet());
++        if (!user.getRole().isStaffSide()) {
++            throw new BusinessRuleException("Roles are for employees. A customer contact is either Company Admin or "
++                + "Customer — use the Company Admin switch instead.");
++        }
++        Set<Roles> picked = systemRoles == null ? Set.of() : systemRoles;
++        Set<Roles> invalid = picked.stream().filter(r -> r != Roles.ADMIN && r != Roles.ENGINEER).collect(Collectors.toSet());
+         if (!invalid.isEmpty()) {
+-            throw new BusinessRuleException(user.getRole() == Roles.CUSTOMER || user.getRole() == Roles.CUSTOMER_ADMIN
+-                ? "CUSTOMER and CUSTOMER_ADMIN are mutually exclusive — change the user's primary role instead of granting an additional one"
+-                : "Staff can only additionally hold the other staff role (ADMIN <-> ENGINEER): invalid role(s) " + invalid);
++            throw new BusinessRuleException("Only Admin and Engineer can be ticked (nothing ticked = Default): invalid role(s) " + invalid);
+         }
+ 
+-        userRoleRepository.deleteByUserIdAndRole_Custom(userId, false);
+-        for (Roles r : desired) {
+-            Role role = roleRepository.findByName(r.name())
+-                .orElseThrow(() -> new ResourceNotFoundException("Role not seeded: " + r.name()));
+-            grant(user, role);
++        Roles previous = user.getRole();
++        Roles next = picked.contains(Roles.ADMIN) ? Roles.ADMIN
++                   : picked.contains(Roles.ENGINEER) ? Roles.ENGINEER
++                   : Roles.STAFF;
++        if (next != previous) {
++            user.setRole(next);
++            userRepository.save(user);
++            audit.event("USER_ROLE_CHANGED", AuditLogger.describe(user) + " · " + previous.name() + " -> " + next.name());
+         }
+-        audit.event("USER_ROLES_CHANGED", AuditLogger.describe(user) + " · additional roles: "
+-            + (desired.isEmpty() ? "none" : desired));
++        replaceCustomRoles(user, next == Roles.ADMIN ? Set.of() : customRoleIds);
++        return previous;
+     }
+ 
+     // ── Custom roles (Role Management) ──────────────────────────────────────
+@@ -155,7 +140,7 @@ public class RoleService {
+         Role role = roleRepository.findById(id)
+             .orElseThrow(() -> new ResourceNotFoundException("Role not found: " + id));
+         if (!role.isCustom()) {
+-            throw new BusinessRuleException("System roles (Admin, Engineer, Company Admin, Customer) can't be edited");
++            throw new BusinessRuleException("System roles (Admin, Engineer, Default, Company Admin, Customer) can't be edited");
+         }
+         String name = req.getName() == null ? "" : req.getName().trim();
+         if (name.isEmpty()) throw new BusinessRuleException("Role name is required");
+@@ -175,36 +160,44 @@ public class RoleService {
+         Role role = roleRepository.findById(id)
+             .orElseThrow(() -> new ResourceNotFoundException("Role not found: " + id));
+         if (!role.isCustom()) {
+-            throw new BusinessRuleException("System roles (Admin, Engineer, Company Admin, Customer) can't be deleted");
++            throw new BusinessRuleException("System roles (Admin, Engineer, Default, Company Admin, Customer) can't be deleted");
+         }
+         userRoleRepository.deleteByRoleId(id);
+         roleRepository.delete(role);
+         audit.event("ROLE_DELETED", "roleId=" + id + " name=" + role.getName());
+     }
+ 
+-    /** Replaces the full set of custom roles granted to a user. Only staff (ADMIN/ENGINEER) can hold one. */
+-    @Transactional
+-    public void setCustomRoles(Long userId, Set<Long> roleIds) {
+-        User user = userRepository.findById(userId)
+-            .orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
+-        assertNotSelf(userId);
+-        Set<Long> desired = roleIds == null ? Set.of() : roleIds;
+-        if (!desired.isEmpty() && user.getRole() != Roles.ADMIN && user.getRole() != Roles.ENGINEER) {
+-            throw new BusinessRuleException("Custom roles can only be granted to staff (Admin/Engineer)");
+-        }
++    /**
++     * Replaces the custom roles granted to an employee. Only the difference is written: the
++     * (user_id, role_id) pair is unique, and Hibernate inserts IDENTITY rows immediately but
++     * defers deletes, so "delete everything, re-insert the wanted set" would trip the constraint
++     * for any role that stays.
++     */
++    private void replaceCustomRoles(User user, Set<Long> roleIds) {
++        Set<Long> desired = roleIds == null ? Set.of() : Set.copyOf(roleIds);
++        List<UserRole> current = userRoleRepository.findByUserIdAndRole_Custom(user.getId(), true);
++        Set<Long> currentIds = current.stream().map(ur -> ur.getRole().getId()).collect(Collectors.toSet());
++        if (currentIds.equals(desired)) return;
+ 
+-        userRoleRepository.deleteByUserIdAndRole_Custom(userId, true);
+-        // Names, not ids: the audit row has to stay readable after the role is renamed or deleted.
+-        List<String> grantedNames = new ArrayList<>();
++        List<Role> toGrant = new ArrayList<>();
+         for (Long roleId : desired) {
++            if (currentIds.contains(roleId)) continue;
+             Role role = roleRepository.findById(roleId)
+                 .orElseThrow(() -> new ResourceNotFoundException("Role not found: " + roleId));
+             if (!role.isCustom()) {
+-                throw new BusinessRuleException("\"" + role.getName() + "\" is a system role — grant it via Additional roles instead");
++                throw new BusinessRuleException("\"" + role.getName() + "\" is a system role — tick Admin or Engineer instead");
+             }
+-            grant(user, role);
+-            grantedNames.add(role.getName());
++            toGrant.add(role);
+         }
++        for (UserRole ur : current) {
++            if (!desired.contains(ur.getRole().getId())) userRoleRepository.delete(ur);
++        }
++        userRoleRepository.flush();
++        toGrant.forEach(role -> grant(user, role));
++
++        // Names, not ids: the audit row has to stay readable after the role is renamed or deleted.
++        List<String> grantedNames = userRoleRepository.findByUserIdAndRole_Custom(user.getId(), true).stream()
++            .map(ur -> ur.getRole().getName()).sorted().toList();
+         audit.event("USER_CUSTOM_ROLES_CHANGED", AuditLogger.describe(user) + " · custom roles: "
+             + (grantedNames.isEmpty() ? "none" : String.join(", ", grantedNames)));
+     }
+diff --git a/backend/src/main/java/com/konohahelpdesk/service/user/UserService.java b/backend/src/main/java/com/konohahelpdesk/service/user/UserService.java
+index 1817941..b2415a2 100755
+--- a/backend/src/main/java/com/konohahelpdesk/service/user/UserService.java
++++ b/backend/src/main/java/com/konohahelpdesk/service/user/UserService.java
+@@ -71,8 +71,8 @@ public class UserService {
+         user.setPhone(request.getPhone().trim());
+         user.setRole(request.getRole());
+ 
+-        // Customer-facing roles belong to a company; internal roles (ADMIN/ENGINEER) don't.
+-        boolean requiresCompany = request.getRole() == Roles.CUSTOMER || request.getRole() == Roles.CUSTOMER_ADMIN;
++        // Customer-facing roles belong to a company; employee roles (Admin/Engineer/Default) don't.
++        boolean requiresCompany = request.getRole().isCustomerSide();
+         if (requiresCompany) {
+             if (request.getCompanyId() == null) {
+                 throw new BusinessRuleException("companyId is required for role " + request.getRole());
+@@ -116,14 +116,12 @@ public class UserService {
+         }
+         var byEngineer = assignments.companiesByEngineer();
+         var ids = users.stream().map(User::getId).toList();
+-        var additionalByUser = roleService.additionalRolesByUser(ids);
+         var customByUser = roleService.customRolesByUser(ids);
+         return users.stream().map(u -> {
+             UserResponse r = UserResponse.from(u);
+             if (u.getRole() == Roles.ENGINEER || u.getRole() == Roles.ADMIN) {
+                 r.setAssignedCompanies(byEngineer.getOrDefault(u.getId(), List.of()));
+             }
+-            r.setAdditionalRoles(additionalByUser.getOrDefault(u.getId(), List.of()));
+             r.setCustomRoles(customByUser.getOrDefault(u.getId(), List.of()));
+             return r;
+         }).toList();
+@@ -132,24 +130,27 @@ public class UserService {
+     @Transactional(readOnly = true)
+     public UserResponse getById(Long id) {
+         UserResponse r = UserResponse.from(loadActiveOrThrow(id));
+-        r.setAdditionalRoles(roleService.additionalRoles(id));
+         r.setCustomRoles(roleService.customRoles(id));
+         return r;
+     }
+ 
+-    /** ADMIN-only: replace the additive roles granted to a user (their primary role is untouched). */
+-    @Transactional
+-    public UserResponse setAdditionalRoles(Long id, Set<Roles> roles) {
+-        loadActiveOrThrow(id);
+-        roleService.setAdditionalRoles(id, roles);
+-        return getById(id);
+-    }
+-
+-    /** ADMIN-only: replace the custom (Role Management) roles granted to a user. */
++    /**
++     * ADMIN-only: what the Users page "Roles" checkboxes save — Admin / Engineer (nothing = Default)
++     * plus the custom roles. Moving someone to Default also takes away what only engineers hold:
++     * their company assignments and any "main engineer" slot, so they stop being notified about
++     * tickets they can no longer open.
++     */
+     @Transactional
+-    public UserResponse setCustomRoles(Long id, Set<Long> roleIds) {
+-        loadActiveOrThrow(id);
+-        roleService.setCustomRoles(id, roleIds);
++    public UserResponse setRoles(Long id, Set<Roles> roles, Set<Long> customRoleIds) {
++        User user = loadActiveOrThrow(id);
++        Roles previous = roleService.setStaffRoles(id, roles, customRoleIds);
++        if (user.getRole() == Roles.STAFF && previous != Roles.STAFF) {
++            assignments.clearForEngineer(id);
++            int released = companyRepository.clearMainEngineer(id);
++            if (released > 0) {
++                audit.event("MAIN_ENGINEER_RELEASED", AuditLogger.describe(user) + " · companies=" + released + " · moved to Default");
++            }
++        }
+         return getById(id);
+     }
+ 
+@@ -174,9 +175,9 @@ public class UserService {
+     }
+ 
+     /**
+-     * Refuses removing the only way back in. Counts ACTIVE primary-role admins; a user whose admin
+-     * access comes from an additive grant is deliberately not counted, because that grant can only
+-     * be made by an admin, so it cannot be the last one standing.
++     * Refuses removing the only way back in. Counts ACTIVE admins. (Changing an admin's roles can't
++     * strand the system either: nobody may change their own roles, so whoever demotes an admin is
++     * themselves an admin who stays one.)
+      */
+     private void assertNotLastAdmin(User target, String verb) {
+         if (target.getRole() != Roles.ADMIN || target.getStatus() != UserStatus.ACTIVE) return;
+@@ -239,7 +240,7 @@ public class UserService {
+      * same side. Skips codes still held by soft-deleted users.
+      */
+     private String nextUserCode(Roles role) {
+-        boolean staff = role == Roles.ADMIN || role == Roles.ENGINEER;
++        boolean staff = role.isStaffSide();
+         String prefix = staff ? "EMP" : "CUS";
+         int digits = staff ? 5 : 6;
+         long n = userRepository.count() + 1;
+diff --git a/backend/src/main/resources/db/migration/V3__staff_roles.sql b/backend/src/main/resources/db/migration/V3__staff_roles.sql
+new file mode 100644
+index 0000000..13f8f27
+--- /dev/null
++++ b/backend/src/main/resources/db/migration/V3__staff_roles.sql
+@@ -0,0 +1,35 @@
++-- =============================================================================
++--  V3 - employee roles become one choice: Admin, Engineer, or Default (no modules)
++-- =============================================================================
++
++-- New primary role STAFF = "Default": an employee who can sign in but has no module until an
++-- admin ticks Engineer / Admin or grants a custom role. The CHECK constraint lists every value
++-- of the Roles enum, so it has to be replaced to accept the new one.
++ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
++ALTER TABLE users ADD CONSTRAINT users_role_check
++    CHECK (role IN ('ENGINEER', 'ADMIN', 'CUSTOMER_ADMIN', 'CUSTOMER', 'STAFF'));
++
++-- Until now an employee had a primary role PLUS optional "additional" system roles
++-- (an Engineer could also be granted Admin). The service code only ever looked at the primary
++-- role, so such a user had Admin pages but Engineer-scoped data. Flatten it: an Engineer who
++-- was also granted Admin becomes an Admin (Admin already includes everything an Engineer does).
++UPDATE users u
++SET role = 'ADMIN', updated_at = now()
++WHERE u.role = 'ENGINEER'
++  AND EXISTS (
++      SELECT 1
++      FROM user_roles ur
++      JOIN roles r ON r.id = ur.role_id
++      WHERE ur.user_id = u.id AND r.custom = false AND r.name = 'ADMIN'
++  );
++
++-- The additive system-role grants are gone; custom (Role Management) grants are kept.
++DELETE FROM user_roles ur
++USING roles r
++WHERE ur.role_id = r.id AND r.custom = false;
++
++-- An Admin already holds every privilege, so custom roles on an Admin are dead weight; the Users
++-- page shows "Included in Admin" and saving an Admin drops them too. Do the same here.
++DELETE FROM user_roles ur
++USING users u
++WHERE ur.user_id = u.id AND u.role = 'ADMIN';
+diff --git a/frontend/src/App.tsx b/frontend/src/App.tsx
+index 9e86b60..5bb6177 100755
+--- a/frontend/src/App.tsx
++++ b/frontend/src/App.tsx
+@@ -59,6 +59,7 @@ const ClientTicketsPage = lazyPage(() => import('./pages/client/ClientTicketsPag
+ const ClientReportsPage = lazyPage(() => import('./pages/client/ClientReportsPage'))
+ const NewTicketPage = lazyPage(() => import('./pages/client/NewTicketPage'))
+ const SettingsPage = lazyPage(() => import('./pages/client/SettingsPage'))
++const StaffHomePage = lazyPage(() => import('./pages/dashboard/StaffHomePage'))
+ 
+ /**
+  * Live data (ticket lists / counts, notifications) polls every 20s while the tab is visible, so
+@@ -82,10 +83,15 @@ const queryClient = new QueryClient({
+   },
+ })
+ 
+-/** Same URL, different screen per portal (staff vs client). */
+-function ByPortal({ staff, client }: { staff: React.ReactNode; client: React.ReactNode }) {
++/**
++ * Same URL, different screen per portal: Admin/Engineer, customer, or — for a Default-role
++ * employee, who has no tickets, reports or customer screens — `defaultStaff` (home by default).
++ */
++function ByPortal({ staff, client, defaultStaff }: { staff: React.ReactNode; client: React.ReactNode; defaultStaff?: React.ReactNode }) {
+   const { hasRole } = useAuth()
+-  return <>{hasRole('ADMIN', 'ENGINEER') ? staff : client}</>
++  if (hasRole('ADMIN', 'ENGINEER')) return <>{staff}</>
++  if (hasRole('STAFF')) return <>{defaultStaff ?? <Navigate to="/" replace />}</>
++  return <>{client}</>
+ }
+ 
+ export default function App() {
+@@ -108,10 +114,13 @@ export default function App() {
+                 {/* Outside the shell: the default admin can't call anything else until this is done. */}
+                 <Route path="change-password" element={<ChangePasswordRequiredPage />} />
+                 <Route element={<AppShell />}>
+-                  <Route index element={<ByPortal staff={<DashboardPage />} client={<ClientOverviewPage />} />} />
++                  <Route index element={<ByPortal staff={<DashboardPage />} client={<ClientOverviewPage />} defaultStaff={<StaffHomePage />} />} />
+                   <Route path="tickets" element={<ByPortal staff={<TicketsPage />} client={<ClientTicketsPage />} />} />
+-                  <Route path="tickets/new" element={<NewTicketPage />} />
+-                  <Route path="tickets/:id" element={<TicketDetailPage />} />
++                  {/* No tickets for the Default employee role — the API refuses them anyway. */}
++                  <Route element={<RequireRole roles={['ADMIN', 'ENGINEER', 'CUSTOMER_ADMIN', 'CUSTOMER']} />}>
++                    <Route path="tickets/new" element={<NewTicketPage />} />
++                    <Route path="tickets/:id" element={<TicketDetailPage />} />
++                  </Route>
+                   <Route path="companies/:id" element={<CompanyDetailPage />} />
+                   {/* Customers get their own company-scoped report, gated on the REPORTING feature. */}
+                   <Route path="analytics" element={<ByPortal staff={<AnalyticsPage />} client={<ClientReportsPage />} />} />
+@@ -120,12 +129,14 @@ export default function App() {
+                       own equipment list, and a customer never holds that privilege. Their access
+                       is decided server-side by company scope plus the ASSET_MANAGEMENT plan
+                       feature, which is the only thing that can actually enforce it. */}
+-                  <Route path="assets" element={<ByPortal staff={<Navigate to="/admin/assets" replace />} client={<ClientAssetsPage />} />} />
++                  <Route path="assets" element={<ByPortal staff={<Navigate to="/admin/assets" replace />} client={<ClientAssetsPage />} defaultStaff={<Navigate to="/admin/assets" replace />} />} />
+                   <Route path="settings" element={<SettingsPage />} />
+                   <Route path="profile" element={<SettingsPage />} />
+ 
+-                  <Route element={<RequireRole roles={['ADMIN', 'ENGINEER']} />}>
++                  <Route element={<RequireRoleOrPrivilege roles={['ADMIN', 'ENGINEER']} privilege="MANAGE_COMPANIES" />}>
+                     <Route path="companies" element={<CompaniesPage />} />
++                  </Route>
++                  <Route element={<RequireRole roles={['ADMIN', 'ENGINEER']} />}>
+                     {/* Plain forwards — the destination route enforces its own access. */}
+                     <Route path="admin/engineers" element={<Navigate to="/admin/users" replace />} />
+                     <Route path="admin/settings" element={<Navigate to="/admin/plans" replace />} />
+diff --git a/frontend/src/api/users.ts b/frontend/src/api/users.ts
+index 78ac246..f2b6d4b 100755
+--- a/frontend/src/api/users.ts
++++ b/frontend/src/api/users.ts
+@@ -19,8 +19,8 @@ export const usersApi = {
+     return api.put<User>(`/users/${id}/photo`, fd)
+   },
+   setCompanies: (id: number, companyIds: number[]) => api.put<{ id: number; name: string }[]>(`/users/${id}/companies`, companyIds),
+-  setRoles: (id: number, roles: Role[]) => api.put<User>(`/users/${id}/roles`, roles),
+-  setCustomRoles: (id: number, roleIds: number[]) => api.put<User>(`/users/${id}/custom-roles`, roleIds),
++  /** An employee's roles: Admin and/or Engineer (none = Default) plus custom roles. Admin only. */
++  setRoles: (id: number, roles: Role[], customRoleIds: number[]) => api.put<User>(`/users/${id}/roles`, { roles, customRoleIds }),
+ }
+ 
+ /** Company-scoped team management (CUSTOMER_ADMIN for own company, ADMIN for any). */
+diff --git a/frontend/src/auth/AuthContext.tsx b/frontend/src/auth/AuthContext.tsx
+index 21eb040..a6c505b 100755
+--- a/frontend/src/auth/AuthContext.tsx
++++ b/frontend/src/auth/AuthContext.tsx
+@@ -32,8 +32,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
+     try { await authApi.logout() } finally { setUser(null) }
+   }, [])
+ 
+-  // Primary role OR an additively-granted one (e.g. an Engineer granted Admin) counts.
+-  const hasRole = useCallback((...roles: Role[]) => !!user && (roles.includes(user.role) || !!user.additionalRoles?.some((r) => roles.includes(r))), [user])
++  // One role per user. (Employees used to be able to hold Engineer AND Admin; now Admin simply
++  // includes everything an Engineer can do, so every check that lets engineers in lists ADMIN too.)
++  const hasRole = useCallback((...roles: Role[]) => !!user && roles.includes(user.role), [user])
+ 
+   // Whether the user holds a given privilege via any custom (Role Management) role they've been granted.
+   const hasPrivilege = useCallback((privilege: Privilege) => !!user?.customRoles?.some((r) => r.privileges.includes(privilege)), [user])
+diff --git a/frontend/src/components/layout/Sidebar.tsx b/frontend/src/components/layout/Sidebar.tsx
+index 849fb28..6fc6530 100755
+--- a/frontend/src/components/layout/Sidebar.tsx
++++ b/frontend/src/components/layout/Sidebar.tsx
+@@ -11,7 +11,7 @@ import { ticketsApi } from '../../api/tickets'
+ import { SectionTitle, ProgressBar } from '../ui/Misc'
+ import { Avatar } from '../ui/Avatar'
+ import { api } from '../../lib/api'
+-import type { Role } from '../../types'
++import type { Privilege, Role } from '../../types'
+ 
+ import { portalFor } from './portal'
+ 
+@@ -44,12 +44,12 @@ export function Sidebar() {
+ 
+   // Counts only — this used to fetch the entire ticket list (up to 500 full summary rows, each
+   // carrying SLA state and a comment count) every 15 seconds on every page, to render two badges.
+-  const counts = useQuery({ queryKey: ['tickets', 'counts'], queryFn: ticketsApi.counts })
++  const counts = useQuery({ queryKey: ['tickets', 'counts'], queryFn: ticketsApi.counts, enabled: portal !== 'staff' })
+   // Reference data behind a badge count: it changes when an admin adds a company or invites
+   // someone, not minute to minute, so it opts out of the app's 15s poll. The pages that actually
+   // manage these still use their own queries and still see changes immediately after a mutation,
+   // because those invalidate the same keys.
+-  const companies = useQuery({ queryKey: ['companies'], queryFn: companiesApi.list, enabled: portal !== 'client', refetchInterval: false, staleTime: 5 * 60_000 })
++  const companies = useQuery({ queryKey: ['companies'], queryFn: companiesApi.list, enabled: portal === 'admin' || portal === 'engineer', refetchInterval: false, staleTime: 5 * 60_000 })
+   const allUsers = useQuery({ queryKey: ['users', 'all'], queryFn: () => usersApi.list(), enabled: portal === 'admin', refetchInterval: false, staleTime: 5 * 60_000 })
+   const myCompany = useQuery({ queryKey: ['companies', user?.companyId], queryFn: () => companiesApi.get(user!.companyId!), enabled: portal === 'client' && !!user?.companyId })
+ 
+@@ -60,6 +60,7 @@ export function Sidebar() {
+   const brand = {
+     admin: { icon: <Shield size={20} />, sub: 'Admin Panel' },
+     engineer: { icon: <Ticket size={20} />, sub: 'Engineer Portal' },
++    staff: { icon: <Ticket size={20} />, sub: 'Staff Portal' },
+     client: { icon: <Ticket size={20} />, sub: 'Client Portal' },
+   }[portal]
+ 
+@@ -144,22 +145,18 @@ export function Sidebar() {
+               the privilege was real but invisible — the route guard let them in, nothing linked
+               there, so the only way to use it was to type the URL.
+             */}
+-            {(hasPrivilege('MANAGE_CONTRACTS') || hasPrivilege('MANAGE_USERS') || hasPrivilege('MANAGE_PLANS')
+-              || hasPrivilege('MANAGE_ROLES') || hasPrivilege('MANAGE_TEMPLATES') || hasPrivilege('VIEW_AUDIT_LOG')
+-              || hasPrivilege('MANAGE_ASSETS')) && (
+-              <div className="mt-6">
+-                {!collapsed && <div className="px-3 pb-2"><SectionTitle>Administration</SectionTitle></div>}
+-                <div className="space-y-1">
+-                  {hasPrivilege('MANAGE_USERS') && <NavLink to="/admin/users" title={collapsed ? 'Users' : undefined} className={navItem}><Users size={18} /> <L collapsed={collapsed}>Users</L></NavLink>}
+-                  {hasPrivilege('MANAGE_CONTRACTS') && <NavLink to="/admin/contracts" title={collapsed ? 'Service Contracts' : undefined} className={navItem}><FileSignature size={18} /> <L collapsed={collapsed}>Service Contracts</L></NavLink>}
+-                  {hasPrivilege('MANAGE_ASSETS') && <NavLink to="/admin/assets" title={collapsed ? 'Assets' : undefined} className={navItem}><HardDrive size={18} /> <L collapsed={collapsed}>Assets</L></NavLink>}
+-                  {hasPrivilege('MANAGE_PLANS') && <NavLink to="/admin/plans" title={collapsed ? 'Subscription Plans' : undefined} className={navItem}><Layers size={18} /> <L collapsed={collapsed}>Subscription Plans</L></NavLink>}
+-                  {hasPrivilege('MANAGE_TEMPLATES') && <NavLink to="/admin/templates" title={collapsed ? 'Templates' : undefined} className={navItem}><FileText size={18} /> <L collapsed={collapsed}>Templates</L></NavLink>}
+-                  {hasPrivilege('MANAGE_ROLES') && <NavLink to="/admin/roles" title={collapsed ? 'Role Management' : undefined} className={navItem}><KeyRound size={18} /> <L collapsed={collapsed}>Role Management</L></NavLink>}
+-                  {hasPrivilege('VIEW_AUDIT_LOG') && <NavLink to="/admin/audit" title={collapsed ? 'Audit Log' : undefined} className={navItem}><ScrollText size={18} /> <L collapsed={collapsed}>Audit Log</L></NavLink>}
+-                </div>
+-              </div>
+-            )}
++            <PrivilegedLinks collapsed={collapsed} navItem={navItem} hasPrivilege={hasPrivilege} />
++          </>
++        )}
++
++        {portal === 'staff' && (
++          <>
++            {/* Default-role employee: home, plus exactly the pages their custom roles open. */}
++            <div className="space-y-1">
++              <NavLink to="/" end title={collapsed ? 'Home' : undefined} className={navItem}><LayoutGrid size={18} /> <L collapsed={collapsed}>Home</L></NavLink>
++              {hasPrivilege('MANAGE_COMPANIES') && <NavLink to="/companies" title={collapsed ? 'Companies' : undefined} className={navItem}><Building2 size={18} /> <L collapsed={collapsed}>Companies</L></NavLink>}
++            </div>
++            <PrivilegedLinks collapsed={collapsed} navItem={navItem} hasPrivilege={hasPrivilege} />
+           </>
+         )}
+ 
+@@ -226,8 +223,34 @@ function roleLabel(role?: Role) {
+   switch (role) {
+     case 'ADMIN': return 'Service Provider'
+     case 'ENGINEER': return 'Engineer'
++    case 'STAFF': return 'Employee'
+     case 'CUSTOMER_ADMIN': return 'Company Admin'
+     case 'CUSTOMER': return 'Member'
+     default: return ''
+   }
+ }
++
++/** The admin pages a custom role can open, for the engineer and Default (staff) portals. */
++function PrivilegedLinks({ collapsed, navItem, hasPrivilege }: {
++  collapsed: boolean
++  navItem: ReturnType<typeof makeNavItem>
++  hasPrivilege: (p: Privilege) => boolean
++}) {
++  const any = (['MANAGE_CONTRACTS', 'MANAGE_USERS', 'MANAGE_PLANS', 'MANAGE_ROLES', 'MANAGE_TEMPLATES', 'VIEW_AUDIT_LOG', 'MANAGE_ASSETS'] as Privilege[])
++    .some((p) => hasPrivilege(p))
++  if (!any) return null
++  return (
++    <div className="mt-6">
++      {!collapsed && <div className="px-3 pb-2"><SectionTitle>Administration</SectionTitle></div>}
++      <div className="space-y-1">
++        {hasPrivilege('MANAGE_USERS') && <NavLink to="/admin/users" title={collapsed ? 'Users' : undefined} className={navItem}><Users size={18} /> <L collapsed={collapsed}>Users</L></NavLink>}
++        {hasPrivilege('MANAGE_CONTRACTS') && <NavLink to="/admin/contracts" title={collapsed ? 'Service Contracts' : undefined} className={navItem}><FileSignature size={18} /> <L collapsed={collapsed}>Service Contracts</L></NavLink>}
++        {hasPrivilege('MANAGE_ASSETS') && <NavLink to="/admin/assets" title={collapsed ? 'Assets' : undefined} className={navItem}><HardDrive size={18} /> <L collapsed={collapsed}>Assets</L></NavLink>}
++        {hasPrivilege('MANAGE_PLANS') && <NavLink to="/admin/plans" title={collapsed ? 'Subscription Plans' : undefined} className={navItem}><Layers size={18} /> <L collapsed={collapsed}>Subscription Plans</L></NavLink>}
++        {hasPrivilege('MANAGE_TEMPLATES') && <NavLink to="/admin/templates" title={collapsed ? 'Templates' : undefined} className={navItem}><FileText size={18} /> <L collapsed={collapsed}>Templates</L></NavLink>}
++        {hasPrivilege('MANAGE_ROLES') && <NavLink to="/admin/roles" title={collapsed ? 'Role Management' : undefined} className={navItem}><KeyRound size={18} /> <L collapsed={collapsed}>Role Management</L></NavLink>}
++        {hasPrivilege('VIEW_AUDIT_LOG') && <NavLink to="/admin/audit" title={collapsed ? 'Audit Log' : undefined} className={navItem}><ScrollText size={18} /> <L collapsed={collapsed}>Audit Log</L></NavLink>}
++      </div>
++    </div>
++  )
++}
+diff --git a/frontend/src/components/layout/Topbar.tsx b/frontend/src/components/layout/Topbar.tsx
+index 0af849b..a014e03 100755
+--- a/frontend/src/components/layout/Topbar.tsx
++++ b/frontend/src/components/layout/Topbar.tsx
+@@ -14,6 +14,8 @@ export function Topbar({ title, subtitle, actions, search = true, newTicket = tr
+   const [q, setQ] = useState('')
+   const [open, setOpen] = useState(false)
+   const isClient = hasRole('CUSTOMER', 'CUSTOMER_ADMIN')
++  // Default-role employees have no ticket access, so no ticket search or New Ticket for them.
++  const ticketsAllowed = !hasRole('STAFF')
+   const defaultSubtitle = isClient && user?.companyName ? `${user.companyName} · ${formatLongDate()}` : formatLongDate()
+ 
+   return (
+@@ -23,7 +25,7 @@ export function Topbar({ title, subtitle, actions, search = true, newTicket = tr
+         <p className="text-sm text-muted">{subtitle ?? defaultSubtitle}</p>
+       </div>
+       <div className="flex items-center gap-3">
+-        {search && <form
++        {search && ticketsAllowed && <form
+           onSubmit={(e) => { e.preventDefault(); navigate(`/tickets?q=${encodeURIComponent(q)}`) }}
+           className="relative hidden md:block"
+         >
+@@ -38,9 +40,9 @@ export function Topbar({ title, subtitle, actions, search = true, newTicket = tr
+         <ThemeToggle />
+         <NotificationBell />
+         {actions}
+-        {newTicket && <Button onClick={() => (isClient ? navigate('/tickets/new') : setOpen(true))}><Plus size={16} /> New Ticket</Button>}
++        {newTicket && ticketsAllowed && <Button onClick={() => (isClient ? navigate('/tickets/new') : setOpen(true))}><Plus size={16} /> New Ticket</Button>}
+       </div>
+-      {!isClient && <NewTicketModal open={open} onClose={() => setOpen(false)} />}
++      {!isClient && ticketsAllowed && <NewTicketModal open={open} onClose={() => setOpen(false)} />}
+     </header>
+   )
+ }
+diff --git a/frontend/src/components/layout/portal.ts b/frontend/src/components/layout/portal.ts
+index 91787c0..6e053d8 100755
+--- a/frontend/src/components/layout/portal.ts
++++ b/frontend/src/components/layout/portal.ts
+@@ -1,4 +1,6 @@
+ import type { Role } from '../../types'
+ 
+-export type Portal = 'admin' | 'engineer' | 'client'
+-export const portalFor = (role?: Role): Portal => (role === 'ADMIN' ? 'admin' : role === 'ENGINEER' ? 'engineer' : 'client')
++/** staff = an employee with the Default role: only the pages their custom roles open. */
++export type Portal = 'admin' | 'engineer' | 'staff' | 'client'
++export const portalFor = (role?: Role): Portal =>
++  role === 'ADMIN' ? 'admin' : role === 'ENGINEER' ? 'engineer' : role === 'STAFF' ? 'staff' : 'client'
+diff --git a/frontend/src/components/ui/Badge.tsx b/frontend/src/components/ui/Badge.tsx
+index 83ac28a..e48a9b6 100755
+--- a/frontend/src/components/ui/Badge.tsx
++++ b/frontend/src/components/ui/Badge.tsx
+@@ -36,14 +36,17 @@ export function UserStatusBadge({ status }: { status: UserStatus }) {
+   return <span className={cn(pill, map[status])}>{status === 'IS_DELETED' ? 'Deleted' : status.charAt(0) + status.slice(1).toLowerCase()}</span>
+ }
+ 
+-export function GenericBadge({ children, tone = 'gray' }: { children: React.ReactNode; tone?: 'gray' | 'brand' | 'green' | 'red' | 'purple' | 'blue' }) {
+-  const map = {
++export type BadgeTone = 'gray' | 'brand' | 'green' | 'red' | 'purple' | 'blue' | 'amber'
++
++export function GenericBadge({ children, tone = 'gray' }: { children: React.ReactNode; tone?: BadgeTone }) {
++  const map: Record<BadgeTone, string> = {
+     gray: 'bg-gray-100 text-gray-600',
+     brand: 'bg-brand-100 text-brand-700',
+     green: 'bg-green-100 text-green-600',
+     red: 'bg-red-100 text-red-600',
+     purple: 'bg-purple-100 text-purple-700',
+     blue: 'bg-blue-100 text-blue-600',
++    amber: 'bg-amber-100 text-amber-700',
+   }
+   return <span className={cn(pill, map[tone])}>{children}</span>
+ }
+diff --git a/frontend/src/components/ui/RoleBadge.tsx b/frontend/src/components/ui/RoleBadge.tsx
+new file mode 100644
+index 0000000..edfe5af
+--- /dev/null
++++ b/frontend/src/components/ui/RoleBadge.tsx
+@@ -0,0 +1,32 @@
++import { GenericBadge } from './Badge'
++import { CUSTOM_ROLE_ICON, CUSTOM_ROLE_TONE, ROLE_META } from '../../lib/roleMeta'
++import type { CustomRoleRef, Role } from '../../types'
++
++/** A system role (Admin, Engineer, Default, Company Admin, Customer) — same icon and colour everywhere. */
++export function RoleBadge({ role }: { role: Role }) {
++  const meta = ROLE_META[role]
++  const Icon = meta.icon
++  return <GenericBadge tone={meta.tone}><Icon size={12} className="mr-1 inline" />{meta.label}</GenericBadge>
++}
++
++/** A custom role from Role Management. */
++export function CustomRoleBadge({ name }: { name: string }) {
++  const Icon = CUSTOM_ROLE_ICON
++  return <GenericBadge tone={CUSTOM_ROLE_TONE}><Icon size={11} className="mr-1 inline" />{name}</GenericBadge>
++}
++
++/**
++ * Everything a user holds, as the user list shows it. One badge for their role, then one per custom
++ * role. "Default" is only shown when it is the whole story — an employee with custom roles is
++ * described by those. Admin is shown alone: it includes Engineer and every custom privilege.
++ */
++export function UserRoleBadges({ role, customRoles }: { role: Role; customRoles?: CustomRoleRef[] }) {
++  // An Admin already has every privilege, so custom roles would only be noise next to it.
++  const custom = role === 'ADMIN' ? [] : customRoles ?? []
++  return (
++    <div className="flex flex-wrap gap-1.5">
++      {!(role === 'STAFF' && custom.length > 0) && <RoleBadge role={role} />}
++      {custom.map((r) => <CustomRoleBadge key={r.id} name={r.name} />)}
++    </div>
++  )
++}
+diff --git a/frontend/src/lib/roleMeta.ts b/frontend/src/lib/roleMeta.ts
+new file mode 100644
+index 0000000..ec4b04b
+--- /dev/null
++++ b/frontend/src/lib/roleMeta.ts
+@@ -0,0 +1,38 @@
++import { Building2, CircleUserRound, Crown, KeyRound, User as UserIcon, Wrench, type LucideIcon } from 'lucide-react'
++import type { BadgeTone } from '../components/ui/Badge'
++import type { Role } from '../types'
++
++/**
++ * One definition of every role's label, icon and colour, used everywhere a role is shown
++ * (user list badges, filters, the invite form, the edit dialog, Role Management, the sidebar),
++ * so the same role never appears with two different icons.
++ *
++ * Employees hold exactly one of Admin / Engineer / Default (+ optional custom roles);
++ * Admin includes everything an Engineer can do. Customers are Company Admin or Customer.
++ */
++export interface RoleMeta {
++  label: string
++  description: string
++  icon: LucideIcon
++  tone: BadgeTone
++  side: 'staff' | 'customer'
++}
++
++export const ROLE_META: Record<Role, RoleMeta> = {
++  ADMIN: { label: 'Admin', description: 'Full access to everything — includes all Engineer work', icon: Crown, tone: 'purple', side: 'staff' },
++  ENGINEER: { label: 'Engineer', description: 'Works tickets for their assigned companies', icon: Wrench, tone: 'blue', side: 'staff' },
++  STAFF: { label: 'Default', description: 'Employee who can sign in but has no module until a role is ticked', icon: CircleUserRound, tone: 'gray', side: 'staff' },
++  CUSTOMER_ADMIN: { label: 'Company Admin', description: 'Customer who manages their company team', icon: Building2, tone: 'brand', side: 'customer' },
++  CUSTOMER: { label: 'Customer', description: 'Raises and follows their company tickets', icon: UserIcon, tone: 'gray', side: 'customer' },
++}
++
++/** Display order: employees first (most access first), then the customer side. */
++export const ROLE_ORDER: Role[] = ['ADMIN', 'ENGINEER', 'STAFF', 'CUSTOMER_ADMIN', 'CUSTOMER']
++
++/** Custom (Role Management) roles all share this look. */
++export const CUSTOM_ROLE_ICON = KeyRound
++export const CUSTOM_ROLE_TONE: BadgeTone = 'amber'
++
++export const roleLabel = (r: Role) => ROLE_META[r]?.label ?? r
++export const isStaffRole = (r?: Role) => !!r && ROLE_META[r].side === 'staff'
++export const isCustomerRole = (r?: Role) => !!r && ROLE_META[r].side === 'customer'
+diff --git a/frontend/src/pages/admin/AuditLogPage.tsx b/frontend/src/pages/admin/AuditLogPage.tsx
+index 70417fd..ccc055d 100755
+--- a/frontend/src/pages/admin/AuditLogPage.tsx
++++ b/frontend/src/pages/admin/AuditLogPage.tsx
+@@ -1,4 +1,5 @@
+ import { useMemo, useState } from 'react'
++import { ROLE_META } from '../../lib/roleMeta'
+ import { useQuery } from '@tanstack/react-query'
+ import { ChevronLeft, ChevronRight, Download, ScrollText, Search, ShieldAlert } from 'lucide-react'
+ import { Topbar } from '../../components/layout/Topbar'
+@@ -11,7 +12,7 @@ import { GenericBadge } from '../../components/ui/Badge'
+ import { EmptyState } from '../../components/ui/Misc'
+ import { Table, Td, Th, Tr } from '../../components/ui/Table'
+ import { auditApi, type AuditFilters } from '../../api/audit'
+-import type { AuditEvent, AuditLevel } from '../../types'
++import type { AuditEvent, AuditLevel, Role } from '../../types'
+ 
+ const PAGE_SIZE = 50
+ 
+@@ -23,8 +24,9 @@ const PAGE_SIZE = 50
+ const humanAction = (action: string) =>
+   action.toLowerCase().replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase())
+ 
++// The shared label when it's a role we know (STAFF reads "Default"); old rows fall back to the raw name.
+ const roleLabel = (role: string) =>
+-  role === 'CUSTOMER_ADMIN' ? 'Company admin' : role.charAt(0) + role.slice(1).toLowerCase()
++  role in ROLE_META ? ROLE_META[role as Role].label : role.charAt(0) + role.slice(1).toLowerCase()
+ 
+ /**
+  * Groups actions by their first word (TICKET_*, USER_*, LOGIN_*) purely for the filter dropdown,
+diff --git a/frontend/src/pages/admin/RolesPage.tsx b/frontend/src/pages/admin/RolesPage.tsx
+index eda064b..4d3d38c 100755
+--- a/frontend/src/pages/admin/RolesPage.tsx
++++ b/frontend/src/pages/admin/RolesPage.tsx
+@@ -1,4 +1,6 @@
+ import { useState, type FormEvent } from 'react'
++import { ROLE_META, ROLE_ORDER } from '../../lib/roleMeta'
++import { RoleBadge } from '../../components/ui/RoleBadge'
+ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+ import { Lock, Pencil, Plus, ShieldCheck, Trash2 } from 'lucide-react'
+ import { Topbar } from '../../components/layout/Topbar'
+@@ -45,12 +47,14 @@ export default function RolesPage() {
+       <Topbar title="Role Management" subtitle="Create custom roles and tick which privileges they carry" search={false} newTicket={false} actions={<Button onClick={() => setEditing('new')}><Plus size={16} /> New role</Button>} />
+       <Page>
+         <div className="mb-3 flex items-center gap-2 text-sm font-medium text-muted"><Lock size={14} /> System roles</div>
+-        <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+-          {system.map((r) => (
+-            <Card key={r.id}>
+-              <CardBody className="space-y-2 text-sm">
+-                <p className="font-semibold">{r.name}</p>
+-                <p className="text-xs text-muted">Built in — drives sign-in access directly and can't be edited or removed.</p>
++        <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
++          {/* In the shared order, with the same names and icons as the Users page. */}
++          {ROLE_ORDER.filter((role) => system.some((r) => r.name === role)).map((role) => (
++            <Card key={role}>
++              <CardBody className="space-y-2 pt-5 text-sm">
++                <RoleBadge role={role} />
++                <p className="text-xs text-muted">{ROLE_META[role].description}.</p>
++                <p className="text-xs text-muted">Built in — can't be edited or removed.</p>
+               </CardBody>
+             </Card>
+           ))}
+@@ -108,7 +112,7 @@ function RoleFormModal({ role, onClose, onSaved }: { role: RoleDef | 'new'; onCl
+         <Field label="Description" hint="Shown to admins when granting this role — optional"><Textarea rows={2} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></Field>
+         <div>
+           <p className="mb-2 text-sm font-medium">Privileges</p>
+-          <p className="mb-2 text-xs text-muted">Only staff (Admin/Engineer) can be granted a custom role. Ticked privileges apply on top of whatever their primary role already allows.</p>
++          <p className="mb-2 text-xs text-muted">Granted to employees on the Users page. Ticked privileges add to what their role allows — a Default employee gets exactly these pages and nothing else. (Admins already hold every privilege.)</p>
+           <div className="space-y-2 rounded-lg border border-line p-3">
+             {PRIVILEGES.map((p) => (
+               <Checkbox key={p.value} label={`${p.label} — ${p.description}`} checked={form.privileges.includes(p.value)} onChange={(e) => togglePrivilege(p.value, e.target.checked)} />
+diff --git a/frontend/src/pages/admin/UsersPage.tsx b/frontend/src/pages/admin/UsersPage.tsx
+index 03edd9f..2662d79 100755
+--- a/frontend/src/pages/admin/UsersPage.tsx
++++ b/frontend/src/pages/admin/UsersPage.tsx
+@@ -1,49 +1,46 @@
+-import { useMemo, useState, type FormEvent } from 'react'
++import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
+ import { useSearchParams } from 'react-router-dom'
+ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+-import { Building2, Crown, KeyRound, MailCheck, Pencil, Plus, Search, User as UserIcon, Wrench } from 'lucide-react'
++import { Building2, MailCheck, Pencil, Plus, Search, Users as UsersIcon } from 'lucide-react'
+ import { Topbar } from '../../components/layout/Topbar'
+ import { Page } from '../../components/layout/AppShell'
+ import { Card } from '../../components/ui/Card'
+ import { Button } from '../../components/ui/Button'
+ import { Modal } from '../../components/ui/Modal'
+ import { Checkbox, Field, Input } from '../../components/ui/Input'
+-import { SelectMenu } from '../../components/ui/SelectMenu'
++import { SelectMenu, type SelectOption } from '../../components/ui/SelectMenu'
+ import { PhoneInput } from '../../components/ui/PhoneInput'
+ import { Avatar } from '../../components/ui/Avatar'
+ import { GenericBadge, UserStatusBadge } from '../../components/ui/Badge'
++import { UserRoleBadges } from '../../components/ui/RoleBadge'
+ import { Table, Td, Th, Tr } from '../../components/ui/Table'
+ import { Alert, EmptyState } from '../../components/ui/Misc'
+ import { useToast } from '../../components/ui/useToast'
++import { useAuth } from '../../auth/useAuth'
+ import { usersApi, teamApi } from '../../api/users'
+ import { companiesApi } from '../../api/companies'
+ import { rolesApi } from '../../api/roles'
+ import { api, errorMessage, isApiError } from '../../lib/api'
+ import { formatMonthYear } from '../../lib/format'
+ import { isValidEmail } from '../../lib/countries'
++import { CUSTOM_ROLE_ICON, ROLE_META, ROLE_ORDER, isCustomerRole, isStaffRole, roleLabel } from '../../lib/roleMeta'
+ import type { CreateUserRequest, Role, User, UserStatus } from '../../types'
+ 
+-const ROLE_OPTS: { value: Role; label: string; description: string; icon: React.ReactNode }[] = [
+-  { value: 'ENGINEER', label: 'Engineer', description: 'Works tickets for assigned companies', icon: <Wrench size={15} className="text-blue-600" /> },
+-  { value: 'ADMIN', label: 'Admin', description: 'Engineer + full service-provider administration', icon: <Crown size={15} className="text-purple-600" /> },
+-  { value: 'CUSTOMER_ADMIN', label: 'Company Admin', description: 'Customer who manages their company team', icon: <Building2 size={15} className="text-brand-600" /> },
+-  { value: 'CUSTOMER', label: 'Customer', description: 'Raises and follows their company tickets', icon: <UserIcon size={15} className="text-gray-500" /> },
+-]
+-const roleLabel = (r: Role) => ROLE_OPTS.find((o) => o.value === r)?.label ?? r
+-type Filter = 'ALL' | 'STAFF' | 'CUSTOMERS' | Role
++/** Role picker options, from the one shared role definition (same icons as the badges). */
++const roleOption = (r: Role): SelectOption<Role> => {
++  const m = ROLE_META[r]
++  const Icon = m.icon
++  return { value: r, label: m.label, description: m.description, icon: <Icon size={15} className="text-muted" /> }
++}
++const ROLE_OPTS = ROLE_ORDER.map(roleOption)
+ 
+ /**
+- * Which additive roles make sense on top of a given primary role.
+- * Staff (Admin/Engineer, the EMP side) can hold both at once — that's the point of merging them.
+- * Customer-side (Customer/Company Admin, the CUS side) are mutually exclusive tiers of the same
+- * relationship, so no additive role applies there — switching means changing the primary role.
++ * The list filter. Groups first, then one entry per role — the same roles the badges show, so
++ * "Admin" lists exactly the rows with an Admin badge — then one entry per custom role in use.
+  */
+-const ADDITIONAL_ROLE_OPTIONS: Record<Role, Role[]> = {
+-  ADMIN: ['ENGINEER'],
+-  ENGINEER: ['ADMIN'],
+-  CUSTOMER_ADMIN: [],
+-  CUSTOMER: [],
+-}
++type Filter = 'ALL' | 'EMPLOYEES' | 'CUSTOMERS' | Role | `custom:${number}`
++
++const sameSet = <T,>(a: Set<T>, b: Set<T>) => a.size === b.size && [...a].every((x) => b.has(x))
+ 
+ /** Admin Panel → Users: everyone in the system (staff and customer contacts). */
+ export default function UsersPage() {
+@@ -58,11 +55,31 @@ export default function UsersPage() {
+   const companies = useQuery({ queryKey: ['companies'], queryFn: companiesApi.list })
+   const companyFilter = params.get('companyId') ? Number(params.get('companyId')) : undefined
+ 
++  // Custom roles actually held by someone, for the filter (no extra request: it's in the user rows).
++  const customRolesInUse = useMemo(() => {
++    const byId = new Map<number, string>()
++    for (const u of users.data ?? []) for (const r of u.customRoles ?? []) byId.set(r.id, r.name)
++    return [...byId.entries()].sort((a, b) => a[1].localeCompare(b[1]))
++  }, [users.data])
++
++  const filterOptions: SelectOption<Filter>[] = [
++    { value: 'ALL', label: 'All users' },
++    { value: 'EMPLOYEES', label: 'All employees', icon: <UsersIcon size={15} className="text-muted" /> },
++    { value: 'CUSTOMERS', label: 'All customers', icon: <Building2 size={15} className="text-muted" /> },
++    ...ROLE_OPTS.map((o) => ({ ...o, description: undefined })),
++    ...customRolesInUse.map(([id, name]) => ({ value: `custom:${id}` as Filter, label: name, icon: <CUSTOM_ROLE_ICON size={15} className="text-muted" /> })),
++  ]
++
+   const rows = useMemo(() => (users.data ?? []).filter((u) => {
+     if (companyFilter && u.companyId !== companyFilter) return false
+-    if (filter === 'STAFF' && !(u.role === 'ADMIN' || u.role === 'ENGINEER')) return false
+-    if (filter === 'CUSTOMERS' && !(u.role === 'CUSTOMER' || u.role === 'CUSTOMER_ADMIN')) return false
+-    if (filter !== 'ALL' && filter !== 'STAFF' && filter !== 'CUSTOMERS' && u.role !== filter) return false
++    if (filter === 'EMPLOYEES' && !isStaffRole(u.role)) return false
++    if (filter === 'CUSTOMERS' && !isCustomerRole(u.role)) return false
++    if (typeof filter === 'string' && filter.startsWith('custom:')) {
++      const id = Number(filter.slice('custom:'.length))
++      if (!u.customRoles?.some((r) => r.id === id)) return false
++    } else if (filter !== 'ALL' && filter !== 'EMPLOYEES' && filter !== 'CUSTOMERS' && u.role !== filter) {
++      return false
++    }
+     if (status && u.status !== status) return false
+     const needle = q.trim().toLowerCase()
+     return !needle || `${u.firstName} ${u.lastName} ${u.email} ${u.companyName ?? ''}`.toLowerCase().includes(needle)
+@@ -70,17 +87,14 @@ export default function UsersPage() {
+ 
+   return (
+     <>
+-      <Topbar title="User Management" subtitle="Engineers, admins and customer contacts" newTicket={false} actions={<Button onClick={() => setInviteOpen(true)}><Plus size={16} /> Add User</Button>} />
++      <Topbar title="User Management" subtitle="Employees and customer contacts" newTicket={false} actions={<Button onClick={() => setInviteOpen(true)}><Plus size={16} /> Add User</Button>} />
+       <Page>
+         <div className="mb-4 flex flex-wrap items-center gap-3">
+           <div className="relative min-w-64 flex-1">
+             <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name, email or company…" className="h-10 w-full rounded-lg border border-line bg-surface pl-9 pr-3 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-100" />
+           </div>
+-          <SelectMenu<Filter> className="w-48" value={filter} onChange={setFilter} options={[
+-            { value: 'ALL', label: 'All users' }, { value: 'STAFF', label: 'Staff (engineers + admins)' }, { value: 'CUSTOMERS', label: 'Customers' },
+-            ...ROLE_OPTS.map((r) => ({ value: r.value, label: r.label, icon: r.icon })),
+-          ]} />
++          <SelectMenu<Filter> className="w-52" value={filter} onChange={setFilter} options={filterOptions} />
+           <SelectMenu<UserStatus | ''> className="w-40" value={status} onChange={setStatus} options={[{ value: '', label: 'All statuses' }, { value: 'ACTIVE', label: 'Active' }, { value: 'INVITED', label: 'Invited' }, { value: 'INACTIVE', label: 'Inactive' }]} />
+           <span className="whitespace-nowrap text-sm text-muted">{rows.length} users</span>
+         </div>
+@@ -97,16 +111,7 @@ export default function UsersPage() {
+                       <div><p className="font-medium">{u.firstName} {u.lastName}</p><p className="text-xs text-muted">{u.email}</p></div>
+                     </div>
+                   </Td>
+-                  <Td>
+-                    <div className="flex flex-wrap gap-1.5">
+-                      {(u.role === 'ENGINEER' || u.role === 'ADMIN') && <GenericBadge tone="blue"><Wrench size={12} className="mr-1 inline" />Engineer</GenericBadge>}
+-                      {u.role === 'ADMIN' && <GenericBadge tone="purple"><Crown size={12} className="mr-1 inline" />Admin</GenericBadge>}
+-                      {u.role === 'CUSTOMER_ADMIN' && <GenericBadge tone="brand"><Building2 size={12} className="mr-1 inline" />Company Admin</GenericBadge>}
+-                      {u.role === 'CUSTOMER' && <GenericBadge>Customer</GenericBadge>}
+-                      {u.additionalRoles?.map((r) => <GenericBadge key={r} tone="purple">+ {roleLabel(r)}</GenericBadge>)}
+-                      {u.customRoles?.map((r) => <GenericBadge key={r.id} tone="purple"><KeyRound size={11} className="mr-1 inline" />{r.name}</GenericBadge>)}
+-                    </div>
+-                  </Td>
++                  <Td><UserRoleBadges role={u.role} customRoles={u.customRoles} /></Td>
+                   <Td>
+                     {u.companyName ? <span className="inline-flex items-center gap-1.5 text-sm"><Building2 size={14} className="text-muted" /> {u.companyName}</span>
+                       : u.assignedCompanies && u.assignedCompanies.length > 0 ? <div className="flex flex-wrap gap-1.5">{u.assignedCompanies.map((c) => <GenericBadge key={c.id}>{c.name}</GenericBadge>)}</div>
+@@ -131,10 +136,11 @@ export default function UsersPage() {
+ function InviteUserModal({ open, onClose, companies, defaultCompanyId }: { open: boolean; onClose: () => void; companies: { id: number; name: string }[]; defaultCompanyId?: number }) {
+   const qc = useQueryClient()
+   const toast = useToast()
+-  const blank: CreateUserRequest = { firstName: '', lastName: '', email: '', phone: '', role: defaultCompanyId ? 'CUSTOMER' : 'ENGINEER', companyId: defaultCompanyId }
++  // New employees start on Default (no modules) — tick a role for them once they're in.
++  const blank: CreateUserRequest = { firstName: '', lastName: '', email: '', phone: '', role: defaultCompanyId ? 'CUSTOMER' : 'STAFF', companyId: defaultCompanyId }
+   const [form, setForm] = useState<CreateUserRequest>(blank)
+   const [touched, setTouched] = useState(false)
+-  const needsCompany = form.role === 'CUSTOMER' || form.role === 'CUSTOMER_ADMIN'
++  const needsCompany = isCustomerRole(form.role)
+   const emailOk = isValidEmail(form.email)
+   const phoneOk = /^\+[0-9]{8,16}$/.test(form.phone)
+ 
+@@ -175,30 +181,58 @@ function InviteUserModal({ open, onClose, companies, defaultCompanyId }: { open:
+ function EditUserModal({ user, companies, onClose }: { user: User; companies: { id: number; name: string }[]; onClose: () => void }) {
+   const qc = useQueryClient()
+   const toast = useToast()
+-  const isStaff = user.role === 'ENGINEER' || user.role === 'ADMIN'
+-  const isCustomerSide = user.role === 'CUSTOMER' || user.role === 'CUSTOMER_ADMIN'
+-  const [selected, setSelected] = useState<Set<number>>(new Set(user.assignedCompanies?.map((c) => c.id) ?? []))
+-  const [roles, setRoles] = useState<Set<Role>>(new Set(user.additionalRoles ?? []))
+-  const [customRoleIds, setCustomRoleIds] = useState<Set<number>>(new Set(user.customRoles?.map((r) => r.id) ?? []))
+-  const invalidate = () => { void qc.invalidateQueries({ queryKey: ['users'] }); void qc.invalidateQueries({ queryKey: ['companies'] }); void qc.invalidateQueries({ queryKey: ['team'] }) }
++  const { user: me, hasRole } = useAuth()
++  const isEmployee = isStaffRole(user.role)
++  const isCustomerSide = isCustomerRole(user.role)
++  // The API lets only an Admin change roles, and nobody their own.
++  const isSelf = me?.id === user.id
++  const canEditRoles = hasRole('ADMIN') && !isSelf
+ 
+-  const customRoles = useQuery({ queryKey: ['roles'], queryFn: rolesApi.list, enabled: isStaff })
+-  const grantableCustomRoles = (customRoles.data ?? []).filter((r) => r.custom)
++  // ── Form state — everything below is saved by the one Save button ──────────
++  const originalCustom = useMemo(() => new Set(user.customRoles?.map((r) => r.id) ?? []), [user.customRoles])
++  const originalCompanies = useMemo(() => new Set(user.assignedCompanies?.map((c) => c.id) ?? []), [user.assignedCompanies])
++  const [admin, setAdmin] = useState(user.role === 'ADMIN')
++  const [engineer, setEngineer] = useState(user.role === 'ENGINEER')
++  const [customRoleIds, setCustomRoleIds] = useState<Set<number>>(new Set(originalCustom))
++  const [selected, setSelected] = useState<Set<number>>(new Set(originalCompanies))
++  const [companyAdmin, setCompanyAdmin] = useState(user.role === 'CUSTOMER_ADMIN')
+ 
+-  const save = useMutation({ mutationFn: () => usersApi.setCompanies(user.id, [...selected]), onSuccess: () => { invalidate(); toast('Assignments saved'); onClose() } })
+-  const saveRoles = useMutation({ mutationFn: () => usersApi.setRoles(user.id, [...roles]), onSuccess: () => { invalidate(); toast('Roles updated'); onClose() }, onError: (e) => toast(errorMessage(e), 'error') })
+-  const saveCustomRoles = useMutation({ mutationFn: () => usersApi.setCustomRoles(user.id, [...customRoleIds]), onSuccess: () => { invalidate(); toast('Roles updated'); onClose() }, onError: (e) => toast(errorMessage(e), 'error') })
+-  const toggleAdmin = useMutation({ mutationFn: (admin: boolean) => teamApi.setAdmin(user.companyId!, user.id, admin), onSuccess: () => { invalidate(); toast('Updated'); onClose() }, onError: (e) => toast(errorMessage(e), 'error') })
++  const customRoles = useQuery({ queryKey: ['roles'], queryFn: rolesApi.list, enabled: isEmployee && canEditRoles })
++  const grantable = (customRoles.data ?? []).filter((r) => r.custom)
++
++  // Admin includes Engineer and every privilege, so ticking it covers the rest.
++  const nextRole: Role = isEmployee ? (admin ? 'ADMIN' : engineer ? 'ENGINEER' : 'STAFF') : companyAdmin ? 'CUSTOMER_ADMIN' : 'CUSTOMER'
++  const nextCustom = admin ? new Set<number>() : customRoleIds
++  const worksTickets = nextRole === 'ADMIN' || nextRole === 'ENGINEER'
++  const rolesChanged = isEmployee && (nextRole !== user.role || !sameSet(nextCustom, originalCustom))
++  const companiesChanged = worksTickets && !sameSet(selected, originalCompanies)
++  const companyAdminChanged = isCustomerSide && nextRole !== user.role
++  const dirty = rolesChanged || companiesChanged || companyAdminChanged
++
++  const invalidate = () => { void qc.invalidateQueries({ queryKey: ['users'] }); void qc.invalidateQueries({ queryKey: ['companies'] }); void qc.invalidateQueries({ queryKey: ['team'] }) }
++
++  const save = useMutation({
++    mutationFn: async () => {
++      // Roles first: moving someone to Engineer/Admin is what allows company assignments.
++      if (rolesChanged && canEditRoles) {
++        await usersApi.setRoles(user.id, admin ? ['ADMIN'] : engineer ? ['ENGINEER'] : [], [...nextCustom])
++      }
++      if (companiesChanged) await usersApi.setCompanies(user.id, [...selected])
++      if (companyAdminChanged) await teamApi.setAdmin(user.companyId!, user.id, companyAdmin)
++    },
++    onSuccess: () => { invalidate(); toast('Changes saved'); onClose() },
++    // Part of it may have been saved before the error — refresh the list either way.
++    onError: () => invalidate(),
++  })
+   const resend = useMutation({ mutationFn: () => usersApi.resendInvite(user.id), onSuccess: () => toast('Invitation re-sent'), onError: (e) => toast(errorMessage(e), 'error') })
+   const setStatus = useMutation({ mutationFn: (s: UserStatus) => usersApi.setStatus(user.id, s), onSuccess: () => { invalidate(); toast('Status updated'); onClose() }, onError: (e) => toast(errorMessage(e), 'error') })
+   const remove = useMutation({ mutationFn: () => usersApi.remove(user.id), onSuccess: () => { invalidate(); toast('User removed'); onClose() }, onError: (e) => toast(errorMessage(e), 'error') })
+   const toggle = (id: number, on: boolean) => setSelected((s) => { const n = new Set(s); if (on) n.add(id); else n.delete(id); return n })
+-  const toggleRole = (r: Role, on: boolean) => setRoles((s) => { const n = new Set(s); if (on) n.add(r); else n.delete(r); return n })
+   const toggleCustomRole = (id: number, on: boolean) => setCustomRoleIds((s) => { const n = new Set(s); if (on) n.add(id); else n.delete(id); return n })
+ 
+   return (
+     <Modal open onClose={onClose} title={`${user.firstName} ${user.lastName}`}
+-      footer={<><Button variant="secondary" onClick={onClose}>Close</Button>{isStaff && <Button onClick={() => save.mutate()} loading={save.isPending}>Save assignments</Button>}</>}>
++      footer={<><Button variant="secondary" onClick={onClose}>Close</Button><Button onClick={() => save.mutate()} loading={save.isPending} disabled={!dirty}>Save</Button></>}>
+       {save.isError && <Alert className="mb-4">{errorMessage(save.error)}</Alert>}
+       <div className="mb-5 flex items-center gap-3">
+         <Avatar size="lg" firstName={user.firstName} lastName={user.lastName} src={api.mediaUrl(user.photoUrl)} />
+@@ -208,63 +242,59 @@ function EditUserModal({ user, companies, onClose }: { user: User; companies: {
+           {user.companyName && <p className="text-sm text-muted">{user.companyName}</p>}
+         </div>
+       </div>
+-      {isStaff && (
+-        <>
+-          <p className="mb-2 text-sm font-medium">Assigned companies</p>
++
++      {isEmployee && (
++        <div>
++          <p className="mb-1 text-sm font-medium">Roles</p>
++          {canEditRoles ? (
++            <>
++              <p className="mb-2 text-xs text-muted">Tick what this employee does. Nothing ticked = <span className="font-medium">Default</span>: they can sign in, but no module is open to them.</p>
++              <div className="divide-y divide-line rounded-lg border border-line">
++                <RoleRow icon={<RoleIcon role="ADMIN" />} label="Admin" description={ROLE_META.ADMIN.description}
++                  checked={admin} onChange={setAdmin} />
++                <RoleRow icon={<RoleIcon role="ENGINEER" />} label="Engineer" description={ROLE_META.ENGINEER.description}
++                  checked={admin || engineer} disabled={admin} note={admin ? 'Included in Admin' : undefined} onChange={setEngineer} />
++                {grantable.map((r) => (
++                  <RoleRow key={r.id} icon={<CUSTOM_ROLE_ICON size={15} className="text-amber-700" />} label={r.name}
++                    description={r.description || `${r.privileges.length} privilege${r.privileges.length === 1 ? '' : 's'}`}
++                    checked={admin || customRoleIds.has(r.id)} disabled={admin} note={admin ? 'Included in Admin' : undefined}
++                    onChange={(v) => toggleCustomRole(r.id, v)} />
++                ))}
++              </div>
++              <p className="mt-2 flex items-center gap-2 text-xs text-muted">Saved as: <UserRoleBadges role={nextRole} customRoles={grantable.filter((r) => nextCustom.has(r.id)).map((r) => ({ id: r.id, name: r.name, privileges: r.privileges }))} /></p>
++            </>
++          ) : (
++            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-line p-3">
++              <UserRoleBadges role={user.role} customRoles={user.customRoles} />
++              <span className="text-xs text-muted">{isSelf ? "You can't change your own roles — ask another admin." : 'Only an Admin can change roles.'}</span>
++            </div>
++          )}
++        </div>
++      )}
++
++      {isEmployee && worksTickets && (
++        <div className="mt-4">
++          <p className="mb-1 text-sm font-medium">Assigned companies</p>
++          <p className="mb-2 text-xs text-muted">{nextRole === 'ADMIN'
++            ? 'An Admin sees every company anyway; this only lists them as an engineer on these.'
++            : 'An Engineer only sees tickets of the companies ticked here (none ticked = all companies).'}</p>
+           <div className="grid grid-cols-2 gap-2 rounded-lg border border-line p-3">
+             {companies.map((c) => <Checkbox key={c.id} label={c.name} checked={selected.has(c.id)} onChange={(e) => toggle(c.id, e.target.checked)} />)}
+             {companies.length === 0 && <p className="col-span-2 text-sm text-muted">No companies yet.</p>}
+           </div>
+-        </>
++        </div>
+       )}
++
+       {isCustomerSide && user.companyId && (
+-        <div className="mt-4 flex items-center justify-between rounded-lg border border-line p-3">
++        <div className="flex items-center justify-between gap-4 rounded-lg border border-line p-3">
+           <div>
+-            <p className="text-sm font-medium">Company Admin</p>
+-            <p className="text-xs text-muted">Company Admin and Customer are mutually exclusive tiers — toggling this changes their role, it doesn't add a second one. Stays in sync with the Team Members page in their portal.</p>
+-            {toggleAdmin.isError && <p className="mt-1 text-xs text-red-600">{errorMessage(toggleAdmin.error)}</p>}
+-          </div>
+-          <ToggleSwitch checked={user.role === 'CUSTOMER_ADMIN'} disabled={toggleAdmin.isPending} onChange={(v) => toggleAdmin.mutate(v)} />
+-        </div>
+-      )}
+-      {(() => {
+-        const allowedRoles = ADDITIONAL_ROLE_OPTIONS[user.role]
+-        if (!isStaff) return null
+-        return (
+-          <div className="mt-4">
+-            <p className="mb-2 text-sm font-medium">Additional roles</p>
+-            {allowedRoles.length > 0 ? (
+-              <>
+-                <p className="mb-2 text-xs text-muted">Grant extra privileges on top of their primary role — e.g. give an Engineer Admin access too.</p>
+-                {saveRoles.isError && <Alert className="mb-2">{errorMessage(saveRoles.error)}</Alert>}
+-                <div className="grid grid-cols-2 gap-2 rounded-lg border border-line p-3">
+-                  {ROLE_OPTS.filter((o) => allowedRoles.includes(o.value)).map((o) => (
+-                    <Checkbox key={o.value} label={o.label} checked={roles.has(o.value)} onChange={(e) => toggleRole(o.value, e.target.checked)} />
+-                  ))}
+-                </div>
+-                <div className="mt-2 flex justify-end">
+-                  <Button size="sm" variant="secondary" onClick={() => saveRoles.mutate()} loading={saveRoles.isPending}>Save roles</Button>
+-                </div>
+-              </>
+-            ) : null}
+-          </div>
+-        )
+-      })()}
+-      {isStaff && grantableCustomRoles.length > 0 && (
+-        <div className="mt-4">
+-          <p className="mb-2 text-sm font-medium">Custom roles</p>
+-          <p className="mb-2 text-xs text-muted">Roles created in Role Management — each grants exactly the privileges ticked on it.</p>
+-          {saveCustomRoles.isError && <Alert className="mb-2">{errorMessage(saveCustomRoles.error)}</Alert>}
+-          <div className="grid grid-cols-2 gap-2 rounded-lg border border-line p-3">
+-            {grantableCustomRoles.map((r) => (
+-              <Checkbox key={r.id} label={r.name} checked={customRoleIds.has(r.id)} onChange={(e) => toggleCustomRole(r.id, e.target.checked)} />
+-            ))}
+-          </div>
+-          <div className="mt-2 flex justify-end">
+-            <Button size="sm" variant="secondary" onClick={() => saveCustomRoles.mutate()} loading={saveCustomRoles.isPending}>Save custom roles</Button>
++            <p className="flex items-center gap-2 text-sm font-medium"><RoleIcon role="CUSTOMER_ADMIN" /> Company Admin</p>
++            <p className="text-xs text-muted">Manages their company's team. Company Admin and Customer are mutually exclusive — this changes their role, it doesn't add a second one. Stays in sync with the Team Members page in their portal.</p>
+           </div>
++          <ToggleSwitch checked={companyAdmin} onChange={setCompanyAdmin} />
+         </div>
+       )}
++
+       <div className="mt-5 flex flex-wrap gap-2 border-t border-line pt-4">
+         {user.status === 'INVITED' && <Button size="sm" variant="secondary" onClick={() => resend.mutate()} loading={resend.isPending}><MailCheck size={14} /> Resend invitation</Button>}
+         {user.status === 'ACTIVE' && <Button size="sm" variant="secondary" onClick={() => setStatus.mutate('INACTIVE')}>Deactivate</Button>}
+@@ -275,6 +305,28 @@ function EditUserModal({ user, companies, onClose }: { user: User; companies: {
+   )
+ }
+ 
++function RoleIcon({ role }: { role: Role }) {
++  const Icon = ROLE_META[role].icon
++  const color = { purple: 'text-purple-700', blue: 'text-blue-600', brand: 'text-brand-600', gray: 'text-gray-500', green: 'text-green-600', red: 'text-red-600', amber: 'text-amber-700' }[ROLE_META[role].tone]
++  return <Icon size={15} className={color} />
++}
++
++/** One tickable role: icon, name, what it allows, and why it's locked when it is. */
++function RoleRow({ icon, label, description, checked, disabled, note, onChange }: {
++  icon: ReactNode; label: string; description: string; checked: boolean; disabled?: boolean; note?: string; onChange: (v: boolean) => void
++}) {
++  return (
++    <label className={`flex items-start gap-3 px-3 py-2.5 ${disabled ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-gray-50'}`}>
++      <input type="checkbox" className="mt-0.5 h-4 w-4 rounded border-line text-brand-600 focus:ring-brand-500" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />
++      <span className="mt-0.5">{icon}</span>
++      <span className="min-w-0 flex-1">
++        <span className="flex items-center gap-2 text-sm font-medium">{label}{note && <GenericBadge>{note}</GenericBadge>}</span>
++        <span className="block text-xs text-muted">{description}</span>
++      </span>
++    </label>
++  )
++}
++
+ function ToggleSwitch({ checked, disabled, onChange }: { checked: boolean; disabled?: boolean; onChange: (v: boolean) => void }) {
+   return (
+     <button type="button" role="switch" aria-checked={checked} disabled={disabled} onClick={() => onChange(!checked)}
+diff --git a/frontend/src/pages/dashboard/StaffHomePage.tsx b/frontend/src/pages/dashboard/StaffHomePage.tsx
+new file mode 100644
+index 0000000..93dd6ab
+--- /dev/null
++++ b/frontend/src/pages/dashboard/StaffHomePage.tsx
+@@ -0,0 +1,66 @@
++import { Link } from 'react-router-dom'
++import { Building2, FileSignature, FileText, HardDrive, KeyRound, Layers, Lock, ScrollText, Users, type LucideIcon } from 'lucide-react'
++import { Topbar } from '../../components/layout/Topbar'
++import { Page } from '../../components/layout/AppShell'
++import { Card, CardBody } from '../../components/ui/Card'
++import { EmptyState } from '../../components/ui/Misc'
++import { useAuth } from '../../auth/useAuth'
++import type { Privilege } from '../../types'
++
++const MODULES: { privilege: Privilege; to: string; label: string; hint: string; icon: LucideIcon }[] = [
++  { privilege: 'MANAGE_USERS', to: '/admin/users', label: 'Users', hint: 'Invite and manage users', icon: Users },
++  { privilege: 'MANAGE_COMPANIES', to: '/companies', label: 'Companies', hint: 'Customer companies and subscriptions', icon: Building2 },
++  { privilege: 'MANAGE_CONTRACTS', to: '/admin/contracts', label: 'Service Contracts', hint: 'Recurring visits and renewals', icon: FileSignature },
++  { privilege: 'MANAGE_ASSETS', to: '/admin/assets', label: 'Assets', hint: 'Customer equipment and warranties', icon: HardDrive },
++  { privilege: 'MANAGE_PLANS', to: '/admin/plans', label: 'Subscription Plans', hint: 'Plans, features and limits', icon: Layers },
++  { privilege: 'MANAGE_TEMPLATES', to: '/admin/templates', label: 'Templates', hint: 'Ticket templates and canned replies', icon: FileText },
++  { privilege: 'MANAGE_ROLES', to: '/admin/roles', label: 'Role Management', hint: 'Custom roles and their privileges', icon: KeyRound },
++  { privilege: 'VIEW_AUDIT_LOG', to: '/admin/audit', label: 'Audit Log', hint: 'Sign-ins and changes', icon: ScrollText },
++]
++
++/**
++ * Home for an employee with the Default role. Default on its own opens no module; custom roles
++ * (granted on the Users page) each open specific pages, which are listed here as shortcuts.
++ */
++export default function StaffHomePage() {
++  const { user, hasPrivilege } = useAuth()
++  const modules = MODULES.filter((m) => hasPrivilege(m.privilege))
++
++  return (
++    <>
++      <Topbar title={`Welcome, ${user?.firstName ?? ''}`} />
++      <Page>
++        {modules.length === 0 ? (
++          <Card>
++            <CardBody>
++              <EmptyState
++                icon={<Lock size={22} />}
++                title="No modules assigned yet"
++                hint="Your account has the Default role, which can sign in but doesn't open any module. An administrator can give you access by ticking a role for you in User Management."
++              />
++            </CardBody>
++          </Card>
++        ) : (
++          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
++            {modules.map((m) => {
++              const Icon = m.icon
++              return (
++                <Link key={m.to} to={m.to} className="block">
++                  <Card className="transition-shadow hover:shadow-md">
++                    <CardBody className="flex items-center gap-4 pt-5">
++                      <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-50 text-brand-600"><Icon size={20} /></span>
++                      <div>
++                        <p className="font-semibold">{m.label}</p>
++                        <p className="text-sm text-muted">{m.hint}</p>
++                      </div>
++                    </CardBody>
++                  </Card>
++                </Link>
++              )
++            })}
++          </div>
++        )}
++      </Page>
++    </>
++  )
++}
+diff --git a/frontend/src/types/index.ts b/frontend/src/types/index.ts
+index 828c9fa..e851f05 100755
+--- a/frontend/src/types/index.ts
++++ b/frontend/src/types/index.ts
+@@ -1,5 +1,5 @@
+ // ── Users / auth ─────────────────────────────────────────────────────────────
+-export type Role = 'ADMIN' | 'ENGINEER' | 'CUSTOMER_ADMIN' | 'CUSTOMER'
++export type Role = 'ADMIN' | 'ENGINEER' | 'STAFF' | 'CUSTOMER_ADMIN' | 'CUSTOMER'
+ export type UserStatus = 'INVITED' | 'ACTIVE' | 'INACTIVE' | 'IS_DELETED'
+ 
+ export interface User {
+@@ -9,6 +9,7 @@ export interface User {
+   firstName: string
+   lastName: string
+   phone: string
++  /** Employees: ADMIN (everything), ENGINEER, or STAFF = the Default role (no modules). */
+   role: Role
+   status: UserStatus
+   companyId?: number
+@@ -17,8 +18,6 @@ export interface User {
+   notifications?: NotificationPreferences
+   /** Engineers/admins only (admin listing): companies they look after. */
+   assignedCompanies?: { id: number; name: string }[]
+-  /** Additive RBAC: roles granted on top of `role`, e.g. an ENGINEER also granted ADMIN. */
+-  additionalRoles?: Role[]
+   /** Role Management: admin-created custom roles (with their privileges) granted to this user. */
+   customRoles?: CustomRoleRef[]
+   /** Feature codes the user's company subscription enables. Customers only — staff aren't plan-gated. */

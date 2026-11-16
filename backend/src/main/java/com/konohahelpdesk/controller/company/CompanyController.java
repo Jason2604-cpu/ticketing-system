@@ -58,7 +58,10 @@ public class CompanyController {
     }
 
     @GetMapping
-    @PreAuthorize("hasAnyRole('ADMIN','ENGINEER')")
+    // The company pickers on the Users, Contracts, Assets, Templates and Knowledge Base pages need this
+    // list too, so a Default employee holding one of those privileges (via a custom role) can use them.
+    @PreAuthorize("hasAnyRole('ADMIN','ENGINEER') or hasAnyAuthority('PRIV_MANAGE_COMPANIES','PRIV_MANAGE_USERS',"
+        + "'PRIV_MANAGE_CONTRACTS','PRIV_MANAGE_ASSETS','PRIV_MANAGE_TEMPLATES','PRIV_MANAGE_KNOWLEDGE_BASE')")
     public ResponseEntity<List<CompanyResponse>> list() {
         return ResponseEntity.ok(companyService.list(currentUser.get()));
     }

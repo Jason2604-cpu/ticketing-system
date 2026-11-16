@@ -1,0 +1,74 @@
+# HTTPS for the edge nginx — see DEPLOYMENT.md step 9.
+#
+# 1. Put your certificate and key in ./nginx/certs/ as fullchain.pem and privkey.pem
+# 2. Copy this file over nginx/default.conf (keep a backup of the http-only one)
+# 3. Replace helpdesk.example.com below with your hostname
+# 4. In .env: HTTPS_PORT=443, COOKIE_SECURE=true, and FRONTEND_BASE_URL / CORS_ALLOWED_ORIGINS
+#    set to https://helpdesk.example.com
+# 5. docker compose up -d   (the certs folder is already mounted read-only)
+
+upstream backend  { server backend:8080;  keepalive 16; }
+upstream frontend { server frontend:80;   keepalive 8; }
+
+gzip on;
+gzip_proxied any;
+gzip_comp_level 5;
+gzip_min_length 1024;
+gzip_vary on;
+gzip_types application/json application/javascript text/css text/plain text/csv image/svg+xml;
+
+# Plain http: healthcheck + redirect everything else to https.
+server {
+    listen 80;
+    server_name _;
+    server_tokens off;
+
+    location = /nginx-health {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name helpdesk.example.com;
+    server_tokens off;
+
+    ssl_certificate     /etc/nginx/certs/fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    client_max_body_size 30m;
+
+    location /api/ {
+        proxy_pass http://backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection        "";
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-For   $remote_addr;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_request_buffering off;
+    }
+
+    location / {
+        proxy_pass http://frontend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    }
+}

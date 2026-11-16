@@ -12,10 +12,14 @@ public interface UserRoleRepository extends JpaRepository<UserRole, Long> {
 
     List<UserRole> findByUserId(Long userId);
 
-    List<UserRole> findByUserIdIn(Collection<Long> userIds);
-
-    void deleteByUserId(Long userId);
-
+    /**
+     * The roles granted to a user, with their privileges, in one query — what JwtCookieFilter needs
+     * on EVERY request. findByUserId would also reload the user (and its company graph) per row.
+     */
+    @org.springframework.data.jpa.repository.Query(
+        "select r from UserRole ur join ur.role r left join fetch r.privileges where ur.user.id = :userId")
+    List<com.konohahelpdesk.model.rbac.Role> findRolesWithPrivilegesByUserId(
+        @org.springframework.data.repository.query.Param("userId") Long userId);
     /**
      * Scoped variants: the fixed-enum additive grants (ADMIN/ENGINEER, role.custom = false) and the
      * admin-created custom-role grants (role.custom = true) are replaced independently — saving one
@@ -27,7 +31,4 @@ public interface UserRoleRepository extends JpaRepository<UserRole, Long> {
 
     void deleteByUserIdAndRole_Custom(Long userId, boolean custom);
 
-    void deleteByRoleId(Long roleId);
-
-    long countByRoleId(Long roleId);
-}
+    void deleteByRoleId(Long roleId);}

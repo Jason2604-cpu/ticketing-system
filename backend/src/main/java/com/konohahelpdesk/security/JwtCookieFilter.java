@@ -3,7 +3,6 @@ package com.konohahelpdesk.security;
 import com.konohahelpdesk.config.AppProperties;
 import com.konohahelpdesk.model.rbac.Privilege;
 import com.konohahelpdesk.model.rbac.Role;
-import com.konohahelpdesk.model.rbac.UserRole;
 import com.konohahelpdesk.model.user.User;
 import com.konohahelpdesk.model.user.UserStatus;
 import com.konohahelpdesk.repository.rbac.UserRoleRepository;
@@ -39,12 +38,18 @@ import java.util.Optional;
  */
 public class JwtCookieFilter extends OncePerRequestFilter {
 
+    /** The only authority a user with {@code mustChangePassword} gets. */
+    public static final String PASSWORD_CHANGE_REQUIRED = "PASSWORD_CHANGE_REQUIRED";
+
     private final JwtService jwtService;
     private final UserRepository userRepository;
     private final UserRoleRepository userRoleRepository;
     private final String cookieName;
+    private final TokenRevocationService revocations;
 
-    public JwtCookieFilter(JwtService jwtService, UserRepository userRepository, UserRoleRepository userRoleRepository, AppProperties props) {
+    public JwtCookieFilter(JwtService jwtService, UserRepository userRepository, UserRoleRepository userRoleRepository,
+                           TokenRevocationService revocations, AppProperties props) {
+        this.revocations = revocations;
         this.jwtService = jwtService;
         this.userRepository = userRepository;
         this.userRoleRepository = userRoleRepository;
@@ -63,13 +68,15 @@ public class JwtCookieFilter extends OncePerRequestFilter {
         if (token != null && SecurityContextHolder.getContext().getAuthentication() == null) {
             Claims claims = jwtService.parseClaims(token);
 
-            if (claims != null) {
+            // A token that was signed out (POST /api/auth/logout) is refused even though its
+            // signature and expiry are still good.
+            if (claims != null && !revocations.isRevoked(token)) {
                 Long userId = parseUserId(claims.getSubject());
                 Optional<User> userOpt = userId == null
                     ? Optional.empty()
                     : userRepository.findByIdAndStatusNot(userId, UserStatus.IS_DELETED);
 
-                if (userOpt.isPresent()) {
+                if (userOpt.isPresent() && !issuedBeforePasswordChange(claims, userOpt.get())) {
                     User user = userOpt.get();
                     List<GrantedAuthority> authorities = authoritiesFor(user);
 
@@ -86,29 +93,48 @@ public class JwtCookieFilter extends OncePerRequestFilter {
     }
 
     /**
-     * Null means "do not authenticate". Includes the user's primary role, any additive system
-     * roles granted via the Roles/UserRoles tables (see RoleService) — an ENGINEER granted ADMIN
-     * gets both ROLE_ENGINEER and ROLE_ADMIN, satisfying @PreAuthorize checks for either — and,
-     * for every custom (Role Management) role granted, a PRIV_* authority per privilege it carries.
-     * Real enforcement: a custom role's ticked privileges only ever add access, never a label.
+     * Null means "do not authenticate". One ROLE_* for the user's role (ADMIN, ENGINEER, STAFF =
+     * Default, CUSTOMER_ADMIN, CUSTOMER) plus, for every custom (Role Management) role granted, a
+     * PRIV_* authority per privilege it carries. Real enforcement: a custom role's ticked
+     * privileges only ever add access, never a label.
      */
     private List<GrantedAuthority> authoritiesFor(User user) {
         if (user.getStatus() != UserStatus.ACTIVE) {
             return null; // INVITED (not yet activated), INACTIVE, IS_DELETED
         }
+        if (user.isMustChangePassword()) {
+            // Signed in, but with a password they didn't choose (the default admin). No role at all,
+            // so every /api route except /auth/me, /auth/change-password and /auth/logout is 403
+            // until the password is replaced — see SecurityConfig.
+            return List.of(new SimpleGrantedAuthority(PASSWORD_CHANGE_REQUIRED));
+        }
         java.util.LinkedHashSet<GrantedAuthority> authorities = new java.util.LinkedHashSet<>();
         authorities.add(new SimpleGrantedAuthority("ROLE_" + user.getRole().name()));
-        for (UserRole ur : userRoleRepository.findByUserId(user.getId())) {
-            Role role = ur.getRole();
-            if (role.isCustom()) {
-                for (Privilege p : role.getPrivileges()) {
-                    authorities.add(new SimpleGrantedAuthority("PRIV_" + p.name()));
-                }
-            } else {
-                authorities.add(new SimpleGrantedAuthority("ROLE_" + role.getName()));
+        // Admins already pass every privilege check and customers never hold custom roles, so only
+        // Engineer / Default employees pay for the privilege lookup — one query fewer on most requests.
+        if (!user.getRole().canHoldCustomRoles()) return List.copyOf(authorities);
+        for (Role role : userRoleRepository.findRolesWithPrivilegesByUserId(user.getId())) {
+            // Only custom roles carry privileges. (System-role rows were never meant to be granted
+            // since V3; ignoring any that slip in keeps a stray row from escalating anyone.)
+            if (!role.isCustom()) continue;
+            for (Privilege p : role.getPrivileges()) {
+                authorities.add(new SimpleGrantedAuthority("PRIV_" + p.name()));
             }
         }
         return List.copyOf(authorities);
+    }
+
+    /**
+     * True when the token predates the user's last password change / reset — e.g. a session opened
+     * with the default admin/admin password before it was replaced. Compared at whole seconds,
+     * the precision of the JWT "iat" claim.
+     */
+    private boolean issuedBeforePasswordChange(Claims claims, User user) {
+        if (user.getPasswordChangedAt() == null) return false;
+        java.util.Date issuedAt = claims.getIssuedAt();
+        if (issuedAt == null) return true;
+        long changed = user.getPasswordChangedAt().atZone(java.time.ZoneId.systemDefault()).toEpochSecond();
+        return issuedAt.toInstant().getEpochSecond() < changed;
     }
 
     private Long parseUserId(String subject) {

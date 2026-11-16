@@ -8,6 +8,9 @@ export function RequireAuth() {
   const location = useLocation()
   if (loading) return <FullPageSpinner />
   if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />
+  // Signed in with a password they didn't choose (the default admin): the API refuses everything
+  // else until it's replaced, so don't render the app shell at all.
+  if (user.mustChangePassword && location.pathname !== '/change-password') return <Navigate to="/change-password" replace />
   return <Outlet />
 }
 

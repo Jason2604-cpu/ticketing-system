@@ -54,7 +54,7 @@ public class UserCodeMigrationSeeder implements ApplicationRunner {
 
         int migrated = 0;
         for (User u : all) {
-            boolean staff = u.getRole() == Roles.ADMIN || u.getRole() == Roles.ENGINEER;
+            boolean staff = u.getRole().isStaffSide();
             if (staff && !EMP_PATTERN.matcher(u.getUserCode()).matches()) {
                 String code;
                 do { code = String.format("EMP%05d", ++empSeq); } while (userRepository.existsByUserCode(code));

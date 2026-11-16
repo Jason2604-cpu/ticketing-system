@@ -1,14 +1,15 @@
 import { useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ArrowLeft, Building2, Clock, FileText, Lock, Paperclip, Send, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, BookOpen, Building2, Clock, FileText, Lock, Paperclip, Send, Trash2 } from 'lucide-react'
 import { Topbar } from '../../components/layout/Topbar'
 import { Page } from '../../components/layout/AppShell'
 import { Card, CardBody, CardHeader } from '../../components/ui/Card'
 import { Button } from '../../components/ui/Button'
 import { Checkbox, Textarea } from '../../components/ui/Input'
+import { TemplatePicker } from '../../components/ui/TemplatePicker'
 import { SelectMenu } from '../../components/ui/SelectMenu'
-import { GenericBadge, PriorityBadge, StatusBadge } from '../../components/ui/Badge'
+import { GenericBadge, PriorityBadge, SlaBadge, StatusBadge } from '../../components/ui/Badge'
 import { Avatar } from '../../components/ui/Avatar'
 import { Spinner } from '../../components/ui/Spinner'
 import { Alert } from '../../components/ui/Misc'
@@ -18,7 +19,12 @@ import { useAuth } from '../../auth/useAuth'
 import { api, errorMessage } from '../../lib/api'
 import { cn } from '../../lib/cn'
 import { formatShortDate, shortName, timeAgo } from '../../lib/format'
-import type { TicketStatus } from '../../types'
+import { priorityStyles } from '../../components/ui/badgeStyles'
+import { useFeature } from '../../lib/useFeature'
+import { LinkifiedText } from '../../components/ui/LinkifiedText'
+import { RelatedArticlesCard } from '../kb/RelatedArticlesCard'
+import { ArticlePickerModal } from '../kb/ArticlePickerModal'
+import type { TicketPriority, TicketStatus } from '../../types'
 
 const STATUS_OPTS = [{ value: 'OPEN', label: 'Open' }, { value: 'IN_PROGRESS', label: 'In Progress' }, { value: 'RESOLVED', label: 'Resolved' }, { value: 'CLOSED', label: 'Closed' }] as const
 
@@ -32,19 +38,23 @@ export default function TicketDetailPage() {
   const toast = useToast()
   const { user, hasRole } = useAuth()
   const isStaff = hasRole('ADMIN', 'ENGINEER')
+  // Staff always see the SLA clocks; customers only when their plan includes SLA Management.
+  const showSla = useFeature('SLA_MANAGEMENT')
   const [comment, setComment] = useState('')
   const [internal, setInternal] = useState(false)
+  const [articlePicker, setArticlePicker] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
 
   // Poll while this page is open so new comments/status changes from the other side show up
   // without the user having to refresh. Pauses when the tab isn't visible (default react-query behaviour).
-  const ticket = useQuery({ queryKey: ['tickets', ticketId], queryFn: () => ticketsApi.get(ticketId), refetchInterval: 4000 })
+  const ticket = useQuery({ queryKey: ['tickets', ticketId], queryFn: () => ticketsApi.get(ticketId), refetchInterval: 10_000 })
   const assignees = useQuery({ queryKey: ['tickets', 'assignees'], queryFn: ticketsApi.assignees, enabled: isStaff })
   const invalidate = () => { void qc.invalidateQueries({ queryKey: ['tickets'] }) }
   const onErr = (e: unknown) => toast(errorMessage(e), 'error')
 
   const setStatus = useMutation({ mutationFn: (s: TicketStatus) => ticketsApi.setStatus(ticketId, s), onSuccess: invalidate, onError: onErr })
   const assign = useMutation({ mutationFn: (uid: number | null) => ticketsApi.assign(ticketId, uid), onSuccess: invalidate, onError: onErr })
+  const setPriority = useMutation({ mutationFn: (p: TicketPriority) => ticketsApi.setPriority(ticketId, p), onSuccess: () => { invalidate(); toast('Priority updated — SLA targets recalculated') }, onError: onErr })
   const addComment = useMutation({ mutationFn: () => ticketsApi.addComment(ticketId, comment, internal), onSuccess: () => { setComment(''); setInternal(false); invalidate() }, onError: onErr })
   const attach = useMutation({ mutationFn: (f: File) => ticketsApi.attach(ticketId, f), onSuccess: () => { invalidate(); toast('Attachment added') }, onError: onErr })
   const removeAttachment = useMutation({ mutationFn: (mid: string) => ticketsApi.removeAttachment(ticketId, mid), onSuccess: () => { invalidate(); toast('Attachment removed') }, onError: onErr })
@@ -77,7 +87,7 @@ export default function TicketDetailPage() {
                 {isStaff && <Link to={`/companies/${t.companyId}`} className="ml-2 inline-flex items-center gap-1.5 text-sm text-brand-600 hover:underline"><Building2 size={14} /> {t.companyName}</Link>}
               </div>
               <h2 className="mt-3 text-xl font-semibold">{t.title}</h2>
-              <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-gray-700">{t.description}</p>
+              <LinkifiedText text={t.description} className="mt-3 whitespace-pre-wrap text-sm leading-6 text-gray-700" />
               {t.stepsToReproduce && (
                 <div className="mt-4 rounded-lg bg-gray-50 p-4">
                   <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Steps to reproduce</p>
@@ -118,7 +128,7 @@ export default function TicketDetailPage() {
                         <span className="flex items-center gap-2 font-medium text-ink">{c.author ? `${c.author.firstName} ${c.author.lastName}` : 'System'}{c.internal && <span className="inline-flex items-center gap-1 rounded-full bg-yellow-100 px-2 py-0.5 text-[11px] text-yellow-800"><Lock size={10} /> Internal note</span>}</span>
                         <span>{timeAgo(c.createdAt)}</span>
                       </div>
-                      <p className="mt-1 whitespace-pre-wrap text-sm">{c.body}</p>
+                      <LinkifiedText text={c.body} className="mt-1 whitespace-pre-wrap text-sm" />
                     </div>
                   </div>
                 ))}
@@ -127,8 +137,31 @@ export default function TicketDetailPage() {
                     <Avatar size="sm" firstName={user?.firstName} lastName={user?.lastName} src={api.mediaUrl(user?.photoUrl)} />
                     <div className="flex-1">
                       <Textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder={internal ? 'Internal note (customer will not see this)…' : 'Add a comment…'} className={cn('min-h-20', internal && 'border-yellow-300 bg-yellow-50/40')} />
-                      <div className="mt-2 flex items-center justify-between">
-                        {isStaff ? <Checkbox label="Internal note" checked={internal} onChange={(e) => setInternal(e.target.checked)} /> : <span />}
+                      <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-3">
+                          {isStaff ? <Checkbox label="Internal note" checked={internal} onChange={(e) => setInternal(e.target.checked)} /> : <span />}
+                          {/*
+                            Staff only — the backend returns an empty list for customers, so this
+                            renders nothing for them regardless of what the client asks for.
+                            Appends rather than replaces: a canned reply is usually the opening of
+                            a message, not the whole of it.
+                          */}
+                          {isStaff && (
+                            <TemplatePicker
+                              kind="REPLY"
+                              companyId={t.companyId}
+                              onPick={(tpl) => setComment((prev) => (prev.trim() ? `${prev.trimEnd()}\n\n${tpl.body}` : tpl.body))}
+                            />
+                          )}
+                          {/* Links the article to the ticket and adds a link line to the reply.
+                              An article the customer can't open only goes into an internal note. */}
+                          {isStaff && (
+                            <button type="button" onClick={() => setArticlePicker(true)}
+                              className="flex items-center gap-1.5 rounded-lg border border-line bg-surface px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">
+                              <BookOpen size={15} className="text-muted" /> Article
+                            </button>
+                          )}
+                        </div>
                         <Button size="sm" type="submit" disabled={!comment.trim()} loading={addComment.isPending}><Send size={14} /> {internal ? 'Add note' : 'Comment'}</Button>
                       </div>
                     </div>
@@ -147,6 +180,14 @@ export default function TicketDetailPage() {
                   <SelectMenu className="mt-1" value={t.status} onChange={(s) => setStatus.mutate(s)} options={statusOptions} disabled={statusOptions.length <= 1} />
                   {reopenLocked && <p className="mt-1.5 text-xs text-muted">Was {t.status === 'CLOSED' ? 'closed' : 'resolved'} more than 7 days ago — it can no longer be reopened.</p>}
                 </div>
+                {isStaff && (
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-muted">Priority</p>
+                    <SelectMenu<TicketPriority> className="mt-1" value={t.priority} onChange={(p) => setPriority.mutate(p)}
+                      options={(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'] as TicketPriority[]).map((p) => ({ value: p, label: priorityStyles[p].label }))} />
+                    <p className="mt-1.5 text-xs text-muted">Changing this re-stamps the SLA deadlines.</p>
+                  </div>
+                )}
                 <div>
                   <p className="text-xs uppercase tracking-wide text-muted">Assignee</p>
                   {isStaff ? (
@@ -158,8 +199,11 @@ export default function TicketDetailPage() {
                     </p>
                   )}
                 </div>
+                {showSla && (
                 <div>
-                  <p className="text-xs uppercase tracking-wide text-muted">SLA</p>
+                  <p className="flex items-center gap-2 text-xs uppercase tracking-wide text-muted">
+                    SLA <SlaBadge state={t.resolutionSla} quiet />
+                  </p>
                   <ul className="mt-1 space-y-1 text-gray-700">
                     <li className={cn('flex items-center gap-2', overdue(t.responseDueAt, t.firstResponseAt) && 'text-red-600')}>
                       {overdue(t.responseDueAt, t.firstResponseAt) ? <AlertTriangle size={14} /> : <Clock size={14} className="text-muted" />}
@@ -171,6 +215,7 @@ export default function TicketDetailPage() {
                     </li>
                   </ul>
                 </div>
+                )}
                 <div>
                   <p className="text-xs uppercase tracking-wide text-muted">Timeline</p>
                   <ul className="mt-1 space-y-1 text-gray-700">
@@ -181,9 +226,15 @@ export default function TicketDetailPage() {
                 </div>
               </CardBody>
             </Card>
+            <RelatedArticlesCard ticketId={t.id} companyId={t.companyId} staff={isStaff} resolved={t.status === 'RESOLVED' || t.status === 'CLOSED'} />
           </div>
         </div>
       </Page>
+      {articlePicker && (
+        <ArticlePickerModal ticketId={t.id} companyId={t.companyId} internal={internal}
+          onInsert={(line) => setComment((prev) => (prev.trim() ? `${prev.trimEnd()}\n\n${line}` : line))}
+          onClose={() => setArticlePicker(false)} />
+      )}
     </>
   )
 }

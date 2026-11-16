@@ -26,6 +26,14 @@ public class Company {
     private String contactPhone;
 
     /** MediaFile id of the company logo (null = none). */
+    /**
+     * When true the SLA clock only runs inside this company's business hours
+     * (see CompanyBusinessHours). False = a plain 24/7 wall clock.
+     */
+    @Column(name = "business_hours_enabled", nullable = false,
+            columnDefinition = "boolean not null default true")
+    private boolean businessHoursEnabled = true;
+
     @Column(name = "logo_id", length = 36)
     private String logoId;
 
@@ -69,6 +77,9 @@ public class Company {
 
     public String getContactPhone() { return contactPhone; }
     public void setContactPhone(String contactPhone) { this.contactPhone = contactPhone; }
+
+    public boolean isBusinessHoursEnabled() { return businessHoursEnabled; }
+    public void setBusinessHoursEnabled(boolean businessHoursEnabled) { this.businessHoursEnabled = businessHoursEnabled; }
 
     public String getLogoId() { return logoId; }
     public void setLogoId(String logoId) { this.logoId = logoId; }

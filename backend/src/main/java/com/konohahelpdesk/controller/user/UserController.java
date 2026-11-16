@@ -39,27 +39,39 @@ public class UserController {
         this.currentUser = currentUser;
     }
 
+    /*
+     * NOTE ON THE TWO @PreAuthorize OVERRIDES BELOW.
+     *
+     * Everything else on this controller is "ADMIN or MANAGE_USERS". Role granting is not, and
+     * cannot be: the roles endpoint is how a user's authorities are set, so anyone who can call
+     * it can call it on THEMSELVES and walk straight up to full admin — tick Admin for yourself,
+     * or grant yourself a custom role carrying every privilege. That made MANAGE_USERS a synonym
+     * for ADMIN, which defeats the point of having a delegable privilege.
+     *
+     * A holder of MANAGE_USERS can still invite, edit, deactivate and remove users. They just
+     * cannot change who holds which role. RoleService additionally refuses to act on your own
+     * account, so even an admin cannot quietly re-grant themselves something.
+     */
+
     /** Replace the set of companies an engineer/admin is assigned to. */
     @PutMapping("/{id}/companies")
     public ResponseEntity<List<UserResponse.CompanyRef>> setCompanies(@PathVariable Long id, @RequestBody java.util.Set<Long> companyIds) {
         return ResponseEntity.ok(assignments.setCompaniesForEngineer(id, companyIds == null ? java.util.Set.of() : companyIds));
     }
 
-    /** Replace the additive roles granted to a user, on top of their primary role (e.g. grant an ENGINEER admin privileges too). */
+    /**
+     * An employee's roles, all at once: Admin / Engineer (nothing ticked = Default) plus custom
+     * roles. Customers aren't handled here — they switch between Customer and Company Admin.
+     */
+    @PreAuthorize("hasRole('ADMIN')")
     @PutMapping("/{id}/roles")
-    public ResponseEntity<UserResponse> setRoles(@PathVariable Long id, @RequestBody java.util.Set<Roles> roles) {
-        return ResponseEntity.ok(userService.setAdditionalRoles(id, roles == null ? java.util.Set.of() : roles));
-    }
-
-    /** Replace the custom (Role Management) roles granted to a user — staff only. */
-    @PutMapping("/{id}/custom-roles")
-    public ResponseEntity<UserResponse> setCustomRoles(@PathVariable Long id, @RequestBody java.util.Set<Long> roleIds) {
-        return ResponseEntity.ok(userService.setCustomRoles(id, roleIds == null ? java.util.Set.of() : roleIds));
+    public ResponseEntity<UserResponse> setRoles(@PathVariable Long id, @RequestBody com.konohahelpdesk.dto.user.SetRolesRequest request) {
+        return ResponseEntity.ok(userService.setRoles(id, request.getRoles(), request.getCustomRoleIds()));
     }
 
     @PostMapping
     public ResponseEntity<UserResponse> create(@Valid @RequestBody CreateUserRequest request) {
-        UserResponse created = userService.createUser(request);
+        UserResponse created = userService.createUser(request, currentUser.get());
         return ResponseEntity.status(HttpStatus.CREATED).body(created);
     }
 
@@ -85,7 +97,7 @@ public class UserController {
 
     @PatchMapping("/{id}/status")
     public ResponseEntity<UserResponse> setStatus(@PathVariable Long id, @RequestParam UserStatus status) {
-        return ResponseEntity.ok(userService.setStatus(id, status));
+        return ResponseEntity.ok(userService.setStatus(id, status, currentUser.get()));
     }
 
     /** Admin sets/replaces a user's photo (users manage their own via /api/profile/photo). */
@@ -101,7 +113,7 @@ public class UserController {
 
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> delete(@PathVariable Long id) {
-        userService.softDelete(id);
+        userService.softDelete(id, currentUser.get());
         return ResponseEntity.noContent().build();
     }
 }

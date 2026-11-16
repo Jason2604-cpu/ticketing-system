@@ -6,18 +6,27 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
 @Entity
-@Table(name = "users")
+@Table(name = "users", indexes = {
+        // The two shapes every list query uses: "this company's people" (team page, seat counts,
+        // the companies list) and "all admins/engineers" (assignee pickers, breach escalation).
+        @Index(name = "ix_users_company", columnList = "company_id"),
+        @Index(name = "ix_users_role_status", columnList = "role, status")
+})
 public class User {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
     // Not updatable=false: a one-time startup migration renumbers legacy codes to the
-    // EMP/CUS scheme (see UserCodeMigrationSeeder) -- normal app code never changes it after creation.
+    // EMP/CUS scheme (see UserCodeMigrationSeeder) — normal app code never changes it after creation.
     @Column(nullable = false, unique = true)
     private String userCode;
 
-    @Column(nullable = false, unique = true)
+    // Not unique = true here: DB-level email uniqueness is enforced by a partial index
+    // (see EmailUniqueIndexMigration) that only covers non-IS_DELETED rows, so a removed
+    // team member's email can be reused for a new invite later. The app-level checks
+    // (existsByEmailIgnoreCaseAndStatusNot, etc.) already only ever look at live users.
+    @Column(nullable = false)
     private String email;
 
     @JsonIgnore
@@ -44,6 +53,22 @@ public class User {
     @ManyToOne
     @JoinColumn(name = "company_id", nullable = true)
     private Company company;
+
+    /**
+     * True while the account still has a password it didn't choose itself — the built-in default
+     * admin (admin@admin.com / admin, see AdminBootstrap). Such a user can only reach /auth/me,
+     * /auth/change-password and /auth/logout until they set their own password (JwtCookieFilter).
+     */
+    @Column(name = "must_change_password", nullable = false)
+    private boolean mustChangePassword = false;
+
+    /**
+     * When the password was last changed or reset. Auth cookies issued before this instant are
+     * refused (JwtCookieFilter), so a password change signs out every other session — including
+     * one opened with the default admin/admin before it was replaced.
+     */
+    @Column(name = "password_changed_at")
+    private LocalDateTime passwordChangedAt;
 
     /** MediaFile id of the profile photo (null = none). */
     @Column(name = "photo_id", length = 36)
@@ -149,6 +174,11 @@ public class User {
     public String getPhotoId() {
         return photoId;
     }
+
+    public boolean isMustChangePassword() { return mustChangePassword; }
+    public void setMustChangePassword(boolean mustChangePassword) { this.mustChangePassword = mustChangePassword; }
+    public LocalDateTime getPasswordChangedAt() { return passwordChangedAt; }
+    public void setPasswordChangedAt(LocalDateTime passwordChangedAt) { this.passwordChangedAt = passwordChangedAt; }
 
     public boolean isNotifyEmail() { return notifyEmail; }
     public void setNotifyEmail(boolean v) { this.notifyEmail = v; }

@@ -19,8 +19,8 @@ export const usersApi = {
     return api.put<User>(`/users/${id}/photo`, fd)
   },
   setCompanies: (id: number, companyIds: number[]) => api.put<{ id: number; name: string }[]>(`/users/${id}/companies`, companyIds),
-  setRoles: (id: number, roles: Role[]) => api.put<User>(`/users/${id}/roles`, roles),
-  setCustomRoles: (id: number, roleIds: number[]) => api.put<User>(`/users/${id}/custom-roles`, roleIds),
+  /** An employee's roles: Admin and/or Engineer (none = Default) plus custom roles. Admin only. */
+  setRoles: (id: number, roles: Role[], customRoleIds: number[]) => api.put<User>(`/users/${id}/roles`, { roles, customRoleIds }),
 }
 
 /** Company-scoped team management (CUSTOMER_ADMIN for own company, ADMIN for any). */

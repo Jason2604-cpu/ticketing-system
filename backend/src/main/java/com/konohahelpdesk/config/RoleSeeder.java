@@ -24,8 +24,10 @@ public class RoleSeeder implements ApplicationRunner {
     @Override
     @Transactional
     public void run(ApplicationArguments args) {
+        // One query for what exists, instead of one lookup per enum constant on every startup.
+        java.util.Set<String> existing = new java.util.HashSet<>(roleRepository.findAllNames());
         for (Roles r : Roles.values()) {
-            if (roleRepository.findByName(r.name()).isEmpty()) {
+            if (!existing.contains(r.name())) {
                 Role role = new Role();
                 role.setName(r.name());
                 roleRepository.save(role);

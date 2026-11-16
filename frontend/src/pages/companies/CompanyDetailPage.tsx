@@ -15,13 +15,14 @@ import { Spinner } from '../../components/ui/Spinner'
 import { useToast } from '../../components/ui/useToast'
 import { NewTicketModal } from '../tickets/NewTicketModal'
 import { SubscriptionEditor } from './SubscriptionEditor'
+import { BusinessHoursEditor, businessHoursValid, defaultBusinessHours } from '../../components/ui/BusinessHoursEditor'
 import { companiesApi } from '../../api/companies'
 import { teamApi, usersApi } from '../../api/users'
 import { ticketsApi } from '../../api/tickets'
 import { api, errorMessage } from '../../lib/api'
-import { formatMonthYear, formatShortDate, minutesToHuman, shortName } from '../../lib/format'
+import { formatBytes, formatMonthYear, formatShortDate, minutesToHuman, shortName } from '../../lib/format'
 import { useAuth } from '../../auth/useAuth'
-import type { Company, CompanySubscriptionRequest, InviteTeamMemberRequest } from '../../types'
+import type { BusinessHours, Company, CompanySubscription, CompanySubscriptionRequest, InviteTeamMemberRequest } from '../../types'
 import { Checkbox, Field, Input, Select } from '../../components/ui/Input'
 import { PhoneInput } from '../../components/ui/PhoneInput'
 import { isValidEmail } from '../../lib/countries'
@@ -42,8 +43,10 @@ export default function CompanyDetailPage() {
   const company = useQuery({ queryKey: ['companies', companyId], queryFn: () => companiesApi.get(companyId) })
   const contacts = useQuery({ queryKey: ['team', companyId], queryFn: () => teamApi.members(companyId) })
   const engineers = useQuery({ queryKey: ['company-engineers', companyId], queryFn: () => teamApi.engineers(companyId) })
-  const tickets = useQuery({ queryKey: ['tickets', 'all'], queryFn: () => ticketsApi.list() })
-  const mine = tickets.data?.filter((t) => t.companyId === companyId || t.companyName === company.data?.name) ?? []
+  // Filtered server-side (the same companyId filter the tickets page uses) instead of downloading
+  // every ticket and filtering here.
+  const tickets = useQuery({ queryKey: ['tickets', { companyId }], queryFn: () => ticketsApi.list({ companyId }) })
+  const mine = tickets.data ?? []
 
   const invalidate = () => { void qc.invalidateQueries({ queryKey: ['companies'] }) }
   const uploadLogo = useMutation({ mutationFn: (f: File) => companiesApi.uploadLogo(companyId, f), onSuccess: () => { invalidate(); toast('Logo updated') }, onError: (e) => toast(errorMessage(e), 'error') })
@@ -78,7 +81,7 @@ export default function CompanyDetailPage() {
                 <CompanyMark name={c.name} src={api.mediaUrl(c.logoUrl)} size="xl" />
                 {isAdmin && (
                   <>
-                    <button onClick={() => logoInput.current?.click()} className="absolute -bottom-1 -right-1 rounded-full border border-line bg-white p-1.5 text-muted shadow-sm hover:text-ink" aria-label="Upload logo"><Upload size={12} /></button>
+                    <button onClick={() => logoInput.current?.click()} className="absolute -bottom-1 -right-1 rounded-full border border-line bg-surface p-1.5 text-muted shadow-sm hover:text-ink" aria-label="Upload logo"><Upload size={12} /></button>
                     <input ref={logoInput} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => e.target.files?.[0] && uploadLogo.mutate(e.target.files[0])} />
                   </>
                 )}
@@ -149,13 +152,16 @@ export default function CompanyDetailPage() {
                 {engineers.data && engineers.data.length > 0 && (
                   <div className="border-t border-line pt-3">
                     <p className="mb-2 text-xs uppercase tracking-wide text-muted">Assigned engineers</p>
-                    <div className="flex -space-x-2">{engineers.data.map((e) => <Avatar key={e.id} size="sm" firstName={e.firstName} lastName={e.lastName} src={api.mediaUrl(e.photoUrl)} className="ring-2 ring-white" />)}</div>
+                    <div className="flex -space-x-2">{engineers.data.map((e) => <Avatar key={e.id} size="sm" firstName={e.firstName} lastName={e.lastName} src={api.mediaUrl(e.photoUrl)} className="ring-2 ring-surface" />)}</div>
                   </div>
                 )}
               </CardBody>
             </Card>
 
             {isAdmin && <MainEngineerCard company={c} />}
+            {isAdmin && <BusinessHoursCard company={c} />}
+
+            {sub && <PlanUsageCard sub={sub} />}
 
             <Card>
               <CardHeader title="SLA Summary" />
@@ -192,6 +198,128 @@ export default function CompanyDetailPage() {
 }
 
 /** Admin-only: pick which engineer/admin is notified whenever a new ticket comes in for this company. */
+/** Bar colour by how close a quota is to full — grey until it matters, red once it's effectively spent. */
+function usageTone(pct: number) {
+  if (pct >= 100) return '#ef4444'
+  if (pct >= 80) return '#f97316'
+  return '#4f46e5'
+}
+
+function UsageRow({ label, used, limit, pct }: { label: string; used: string; limit: string; pct: number }) {
+  return (
+    <div>
+      <div className="flex justify-between text-sm">
+        <span>{label}</span>
+        <span className="font-semibold">{used} <span className="font-normal text-muted">of {limit}</span></span>
+      </div>
+      <ProgressBar value={Math.min(100, pct)} color={usageTone(pct)} className="mt-1.5" />
+    </div>
+  )
+}
+
+/**
+ * What the company has consumed against its plan's limits. Storage is the one the backend
+ * enforces on upload, so it's shown first and warns before an upload starts failing.
+ */
+function PlanUsageCard({ sub }: { sub: CompanySubscription }) {
+  const storageLimitBytes = sub.limits.storageLimitMb * 1024 * 1024
+  const storagePct = storageLimitBytes > 0 ? (sub.usage.storageUsedBytes / storageLimitBytes) * 100 : 0
+  const ticketPct = sub.limits.monthlyTicketLimit > 0 ? (sub.usage.ticketsThisMonth / sub.limits.monthlyTicketLimit) * 100 : 0
+  const seatPct = sub.limits.maxUsers > 0 ? (sub.usage.activeUsers / sub.limits.maxUsers) * 100 : 0
+
+  return (
+    <Card>
+      <CardHeader title="Plan Usage" action={<span className="text-sm text-muted">{sub.subscriptionType === 'CUSTOM' ? 'Custom Plan' : sub.planName ?? 'No plan'}</span>} />
+      <CardBody className="space-y-3">
+        <UsageRow
+          label="Storage"
+          used={formatBytes(sub.usage.storageUsedBytes)}
+          limit={sub.limits.storageLimitMb >= 1024 ? `${Math.round(sub.limits.storageLimitMb / 1024)} GB` : `${sub.limits.storageLimitMb} MB`}
+          pct={storagePct}
+        />
+        <UsageRow label="Tickets this month" used={String(sub.usage.ticketsThisMonth)} limit={String(sub.limits.monthlyTicketLimit)} pct={ticketPct} />
+        <UsageRow label="Seats" used={String(sub.usage.activeUsers)} limit={String(sub.limits.maxUsers)} pct={seatPct} />
+
+        {storagePct >= 100 && <Alert tone="error">Storage is full — new attachments and logo uploads are being rejected.</Alert>}
+        {storagePct >= 80 && storagePct < 100 && <Alert tone="warning">Storage is {Math.round(storagePct)}% used.</Alert>}
+        {ticketPct >= 100 && <Alert tone="error">The monthly ticket limit is reached — new tickets are being rejected until next month.</Alert>}
+      </CardBody>
+    </Card>
+  )
+}
+
+/**
+ * Business hours for an existing company. Read-only summary until Edit is pressed, because this is
+ * a seven-row form and the page is mostly for scanning.
+ *
+ * Saving affects tickets raised from then on: existing deadlines are absolute timestamps stamped
+ * at creation, so changing the schedule never silently re-dates work already in flight.
+ */
+function BusinessHoursCard({ company }: { company: Company }) {
+  const qc = useQueryClient()
+  const toast = useToast()
+  const [editing, setEditing] = useState(false)
+  const [rows, setRows] = useState<BusinessHours[]>(company.businessHours ?? defaultBusinessHours())
+  const [enabled, setEnabled] = useState(company.businessHoursEnabled ?? true)
+
+  const save = useMutation({
+    mutationFn: () => companiesApi.update(company.id, {
+      name: company.name,
+      address: company.address,
+      contactEmail: company.contactEmail,
+      contactPhone: company.contactPhone,
+      mainEngineerId: company.mainEngineer?.id,
+      businessHoursEnabled: enabled,
+      businessHours: rows,
+    }),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['companies'] }); toast('Business hours updated'); setEditing(false) },
+    onError: (e) => toast(errorMessage(e), 'error'),
+  })
+
+  const startEditing = () => {
+    setRows(company.businessHours ?? defaultBusinessHours())
+    setEnabled(company.businessHoursEnabled ?? true)
+    setEditing(true)
+  }
+
+  const summary = company.businessHours ?? defaultBusinessHours()
+  const valid = businessHoursValid(rows)
+
+  return (
+    <Card>
+      <CardHeader
+        title="Business Hours"
+        action={!editing && <button onClick={startEditing} className="text-sm font-medium text-brand-600 hover:underline">Edit</button>}
+      />
+      <CardBody>
+        {editing ? (
+          <div className="space-y-4">
+            <BusinessHoursEditor value={rows} onChange={setRows} enabled={enabled} onEnabledChange={setEnabled} />
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setEditing(false)}>Cancel</Button>
+              <Button onClick={() => save.mutate()} loading={save.isPending} disabled={!valid}>Save</Button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-2 text-sm">
+            {!(company.businessHoursEnabled ?? true) && (
+              <Alert tone="info">The SLA clock runs 24/7 for this company.</Alert>
+            )}
+            {summary.map((r) => (
+              <div key={r.dayOfWeek} className="flex justify-between">
+                <span className="text-muted">{r.dayOfWeek.charAt(0) + r.dayOfWeek.slice(1).toLowerCase()}</span>
+                <span className={r.closed ? 'text-gray-400' : 'font-medium'}>
+                  {r.closed ? 'Closed' : `${r.openTime} – ${r.closeTime}`}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardBody>
+    </Card>
+  )
+}
+
 function MainEngineerCard({ company }: { company: Company }) {
   const qc = useQueryClient()
   const toast = useToast()

@@ -20,12 +20,22 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * Additive RBAC: on top of a user's single primary {@code User.role} (which still drives
- * {@code @PreAuthorize} checks and the default portal a user lands in), an ADMIN can grant extra
- * roles — e.g. an ENGINEER can also be granted ADMIN privileges — and, separately, admin-created
- * custom roles carrying hand-picked {@link com.konohahelpdesk.model.rbac.Privilege}s (Role
- * Management). Both kinds of grant live in the same {@code UserRole} table, kept independent via
- * the {@code role.custom} flag so replacing one set never touches the other.
+ * Who may do what.
+ *
+ * Employees (the EMPxxxxx side) hold exactly ONE system role, stored on {@code User.role}:
+ *  - ADMIN    — everything (it includes everything an Engineer can do),
+ *  - ENGINEER — works tickets for their assigned companies,
+ *  - STAFF    — "Default": signs in, no module at all.
+ * On top of that an employee can be granted admin-created custom roles (Role Management), each
+ * carrying hand-picked {@link com.konohahelpdesk.model.rbac.Privilege}s that open specific admin
+ * pages — e.g. a Default employee with a "Contract Manager" role sees Service Contracts only.
+ *
+ * Customers (CUSTOMER / CUSTOMER_ADMIN) never get custom roles; the two are mutually exclusive
+ * tiers switched with the Company Admin toggle (TeamService.setAdmin).
+ *
+ * (Before V3 an employee could also hold the other staff role as an "additional" grant. The
+ * service layer only ever read the primary role, so an Engineer granted Admin had admin pages
+ * but engineer-scoped data. V3 flattened those grants into the primary role.)
  */
 @Service
 public class RoleService {
@@ -43,73 +53,44 @@ public class RoleService {
         this.audit = audit;
     }
 
-    // ── Fixed-enum additive roles (Admin <-> Engineer) ──────────────────────
-
-    /** The extra system roles granted to one user, beyond their primary role. */
-    public List<Roles> additionalRoles(Long userId) {
-        return userRoleRepository.findByUserIdAndRole_Custom(userId, false).stream()
-            .map(ur -> Roles.valueOf(ur.getRole().getName()))
-            .sorted()
-            .toList();
-    }
-
-    /** Batch form of {@link #additionalRoles(Long)} — one query for a whole user listing. */
-    public Map<Long, List<Roles>> additionalRolesByUser(Collection<Long> userIds) {
-        if (userIds.isEmpty()) return Map.of();
-        Map<Long, List<Roles>> byUser = new HashMap<>();
-        for (UserRole ur : userRoleRepository.findByUserIdInAndRole_Custom(userIds, false)) {
-            byUser.computeIfAbsent(ur.getUser().getId(), k -> new ArrayList<>()).add(Roles.valueOf(ur.getRole().getName()));
-        }
-        byUser.replaceAll((id, roles) -> roles.stream().sorted().toList());
-        return byUser;
-    }
-
-    /** All roles that actually apply to this user — their primary role plus every additive grant. */
-    public Set<Roles> effectiveRoles(User user) {
-        EnumSet<Roles> roles = EnumSet.of(user.getRole());
-        roles.addAll(additionalRoles(user.getId()));
-        return roles;
-    }
+    // ── Employee roles: Admin / Engineer / Default + custom roles ──────────
 
     /**
-     * Which additive roles make sense on top of a given primary role. The two "sides" of the
-     * merged user-code scheme behave differently:
-     *  - Staff (ADMIN/ENGINEER, the EMPxxxxx side) can hold BOTH at once — that's the whole point
-     *    of merging them, e.g. an ENGINEER can also be granted ADMIN privileges.
-     *  - Customer-side (CUSTOMER/CUSTOMER_ADMIN, the CUSxxxxxx side) are mutually exclusive tiers
-     *    of the same relationship — a user is never both at once, so no additive role applies here.
-     *    Moving someone between them means changing their primary role, not granting an extra one.
+     * Saves the Users page "Roles" checkboxes in one go.
+     *
+     * {@code systemRoles} may contain ADMIN and/or ENGINEER; the stored role is the highest one
+     * ticked (Admin includes Engineer), and nothing ticked means Default (STAFF). Custom roles are
+     * replaced with {@code customRoleIds} — except for an Admin, who already holds every privilege,
+     * so any custom roles are dropped rather than kept as dead weight.
+     *
+     * @return the role the user had before, so the caller can tidy up engineer-only state
      */
-    private Set<Roles> allowedAdditionalRoles(Roles primary) {
-        return switch (primary) {
-            case ADMIN -> EnumSet.of(Roles.ENGINEER);
-            case ENGINEER -> EnumSet.of(Roles.ADMIN);
-            case CUSTOMER, CUSTOMER_ADMIN -> EnumSet.noneOf(Roles.class);
-        };
-    }
-
-    /** Replaces the full set of additive system roles for a user. The primary role is never stored here. */
     @Transactional
-    public void setAdditionalRoles(Long userId, Set<Roles> roles) {
+    public Roles setStaffRoles(Long userId, Set<Roles> systemRoles, Set<Long> customRoleIds) {
         User user = userRepository.findById(userId)
             .orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
-        Set<Roles> desired = roles == null ? Set.of() : roles.stream().filter(r -> r != user.getRole()).collect(Collectors.toSet());
-
-        Set<Roles> allowed = allowedAdditionalRoles(user.getRole());
-        Set<Roles> invalid = desired.stream().filter(r -> !allowed.contains(r)).collect(Collectors.toSet());
+        assertNotSelf(userId);
+        if (!user.getRole().isStaffSide()) {
+            throw new BusinessRuleException("Roles are for employees. A customer contact is either Company Admin or "
+                + "Customer — use the Company Admin switch instead.");
+        }
+        Set<Roles> picked = systemRoles == null ? Set.of() : systemRoles;
+        Set<Roles> invalid = picked.stream().filter(r -> !r.worksTickets()).collect(Collectors.toSet());
         if (!invalid.isEmpty()) {
-            throw new BusinessRuleException(user.getRole() == Roles.CUSTOMER || user.getRole() == Roles.CUSTOMER_ADMIN
-                ? "CUSTOMER and CUSTOMER_ADMIN are mutually exclusive — change the user's primary role instead of granting an additional one"
-                : "Staff can only additionally hold the other staff role (ADMIN <-> ENGINEER): invalid role(s) " + invalid);
+            throw new BusinessRuleException("Only Admin and Engineer can be ticked (nothing ticked = Default): invalid role(s) " + invalid);
         }
 
-        userRoleRepository.deleteByUserIdAndRole_Custom(userId, false);
-        for (Roles r : desired) {
-            Role role = roleRepository.findByName(r.name())
-                .orElseThrow(() -> new ResourceNotFoundException("Role not seeded: " + r.name()));
-            grant(user, role);
+        Roles previous = user.getRole();
+        Roles next = picked.contains(Roles.ADMIN) ? Roles.ADMIN
+                   : picked.contains(Roles.ENGINEER) ? Roles.ENGINEER
+                   : Roles.STAFF;
+        if (next != previous) {
+            user.setRole(next);
+            userRepository.save(user);
+            audit.event("USER_ROLE_CHANGED", AuditLogger.describe(user) + " · " + previous.name() + " -> " + next.name());
         }
-        audit.event("USER_ROLES_CHANGED", "userId=" + userId + " additionalRoles=" + desired);
+        replaceCustomRoles(user, next == Roles.ADMIN ? Set.of() : customRoleIds);
+        return previous;
     }
 
     // ── Custom roles (Role Management) ──────────────────────────────────────
@@ -159,7 +140,7 @@ public class RoleService {
         Role role = roleRepository.findById(id)
             .orElseThrow(() -> new ResourceNotFoundException("Role not found: " + id));
         if (!role.isCustom()) {
-            throw new BusinessRuleException("System roles (Admin, Engineer, Company Admin, Customer) can't be edited");
+            throw new BusinessRuleException("System roles (Admin, Engineer, Default, Company Admin, Customer) can't be edited");
         }
         String name = req.getName() == null ? "" : req.getName().trim();
         if (name.isEmpty()) throw new BusinessRuleException("Role name is required");
@@ -179,33 +160,68 @@ public class RoleService {
         Role role = roleRepository.findById(id)
             .orElseThrow(() -> new ResourceNotFoundException("Role not found: " + id));
         if (!role.isCustom()) {
-            throw new BusinessRuleException("System roles (Admin, Engineer, Company Admin, Customer) can't be deleted");
+            throw new BusinessRuleException("System roles (Admin, Engineer, Default, Company Admin, Customer) can't be deleted");
         }
         userRoleRepository.deleteByRoleId(id);
         roleRepository.delete(role);
         audit.event("ROLE_DELETED", "roleId=" + id + " name=" + role.getName());
     }
 
-    /** Replaces the full set of custom roles granted to a user. Only staff (ADMIN/ENGINEER) can hold one. */
-    @Transactional
-    public void setCustomRoles(Long userId, Set<Long> roleIds) {
-        User user = userRepository.findById(userId)
-            .orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
-        Set<Long> desired = roleIds == null ? Set.of() : roleIds;
-        if (!desired.isEmpty() && user.getRole() != Roles.ADMIN && user.getRole() != Roles.ENGINEER) {
-            throw new BusinessRuleException("Custom roles can only be granted to staff (Admin/Engineer)");
+    /**
+     * Replaces the custom roles granted to an employee. Only the difference is written: the
+     * (user_id, role_id) pair is unique, and Hibernate inserts IDENTITY rows immediately but
+     * defers deletes, so "delete everything, re-insert the wanted set" would trip the constraint
+     * for any role that stays.
+     */
+    private void replaceCustomRoles(User user, Set<Long> roleIds) {
+        Set<Long> desired = roleIds == null ? Set.of() : Set.copyOf(roleIds);
+        if (!desired.isEmpty() && !user.getRole().canHoldCustomRoles()) {
+            throw new BusinessRuleException("Custom roles are for Engineer and Default employees — an Admin already has every privilege");
+        }
+        List<UserRole> current = userRoleRepository.findByUserIdAndRole_Custom(user.getId(), true);
+        Set<Long> currentIds = current.stream().map(ur -> ur.getRole().getId()).collect(Collectors.toSet());
+        if (currentIds.equals(desired)) return;
+
+        // All the roles to add in one query, not one findById per ticked role.
+        Set<Long> toAdd = desired.stream().filter(id -> !currentIds.contains(id)).collect(Collectors.toSet());
+        List<Role> toGrant = toAdd.isEmpty() ? List.of() : roleRepository.findAllById(toAdd);
+        if (toGrant.size() != toAdd.size()) {
+            Set<Long> found = toGrant.stream().map(Role::getId).collect(Collectors.toSet());
+            throw new ResourceNotFoundException("Role not found: " + toAdd.stream().filter(id -> !found.contains(id)).toList());
+        }
+        for (Role role : toGrant) {
+            if (!role.isCustom()) {
+                throw new BusinessRuleException("\"" + role.getName() + "\" is a system role — tick Admin or Engineer instead");
+            }
         }
 
-        userRoleRepository.deleteByUserIdAndRole_Custom(userId, true);
-        for (Long roleId : desired) {
-            Role role = roleRepository.findById(roleId)
-                .orElseThrow(() -> new ResourceNotFoundException("Role not found: " + roleId));
-            if (!role.isCustom()) {
-                throw new BusinessRuleException("\"" + role.getName() + "\" is a system role — grant it via Additional roles instead");
-            }
-            grant(user, role);
+        List<String> keptNames = new ArrayList<>();
+        for (UserRole ur : current) {
+            if (desired.contains(ur.getRole().getId())) keptNames.add(ur.getRole().getName());
+            else userRoleRepository.delete(ur);
         }
-        audit.event("USER_CUSTOM_ROLES_CHANGED", "userId=" + userId + " roleIds=" + desired);
+        userRoleRepository.flush();
+        toGrant.forEach(role -> grant(user, role));
+
+        // Names, not ids: the audit row has to stay readable after the role is renamed or deleted.
+        List<String> names = new ArrayList<>(keptNames);
+        toGrant.forEach(r -> names.add(r.getName()));
+        names.sort(String::compareTo);
+        audit.event("USER_CUSTOM_ROLES_CHANGED", AuditLogger.describe(user) + " · custom roles: "
+            + (names.isEmpty() ? "none" : String.join(", ", names)));
+    }
+
+    /**
+     * Nobody edits their own grants — not even an admin. Defence in depth behind the ADMIN-only
+     * @PreAuthorize on the two endpoints: if that annotation is ever loosened back to MANAGE_USERS,
+     * this still stops the self-escalation, and it keeps the audit trail honest (every grant was
+     * made by someone other than its beneficiary).
+     */
+    private void assertNotSelf(Long userId) {
+        var auth = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        if (auth != null && auth.getPrincipal() instanceof User me && me.getId().equals(userId)) {
+            throw new BusinessRuleException("You can't change your own roles — ask another admin.");
+        }
     }
 
     private void grant(User user, Role role) {

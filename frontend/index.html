@@ -4,10 +4,28 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ticketing-system</title>
+    <title>Konoha HelpDesk</title>
+    <script>
+      /*
+       * Paints the right theme before React mounts. Without this the page flashes
+       * white for a frame on every load for anyone using dark, which is the single
+       * most noticeable thing about a badly-implemented dark mode.
+       * Mirrors UiPrefsProvider — keep the key and the values in step.
+       */
+      (function () {
+        try {
+          var stored = localStorage.getItem('konoha.theme');
+          var dark = stored === 'dark' || ((!stored || stored === 'system')
+            && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'light');
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

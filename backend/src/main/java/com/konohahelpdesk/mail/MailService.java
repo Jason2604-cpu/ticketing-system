@@ -42,6 +42,20 @@ public class MailService {
         }
     }
 
+    /** HTML message with a plain-text alternative. Same after-commit behaviour as {@link #send}. */
+    public void sendHtml(String to, String subject, String html, String text) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    dispatcher.deliverHtml(to, subject, html, text);
+                }
+            });
+        } else {
+            dispatcher.deliverHtml(to, subject, html, text);
+        }
+    }
+
     public String activationLink(String rawToken) {
         return cfg.getFrontendBaseUrl() + cfg.getActivatePath() + "?token=" + rawToken;
     }
@@ -52,6 +66,15 @@ public class MailService {
 
     public String ticketLink(Long ticketId) {
         return cfg.getFrontendBaseUrl() + "/tickets/" + ticketId;
+    }
+
+    /** An absolute link to an in-app path such as "/admin/kb/12/edit". */
+    public String appLink(String path) {
+        return cfg.getFrontendBaseUrl() + path;
+    }
+
+    public String companyLink(Long companyId) {
+        return cfg.getFrontendBaseUrl() + "/companies/" + companyId;
     }
 
     public String appName() {

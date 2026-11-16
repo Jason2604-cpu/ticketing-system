@@ -12,5 +12,13 @@ public enum NotificationType {
     /** Sent to the ticket's creator when it's closed. */
     TICKET_CLOSED,
     /** Sent to a company's main engineer when a new ticket comes in for their company. */
-    TICKET_CREATED
+    TICKET_CREATED,
+    /** Sent to the assignee / main engineer / admins when a ticket blows an SLA deadline. */
+    SLA_BREACH,
+    /** Sent to the contract owner / main engineer / admins as a service contract nears its end date. */
+    CONTRACT_RENEWAL_DUE,
+    /** Sent to Admins and Knowledge Base managers when an engineer asks for an article to be published. */
+    KB_PUBLISH_REQUESTED,
+    /** Sent back to that engineer when the article is published, declined, or archived instead. */
+    KB_PUBLISH_DECIDED
 }

@@ -1,4 +1,6 @@
 import { useState, type FormEvent } from 'react'
+import { ROLE_META, ROLE_ORDER } from '../../lib/roleMeta'
+import { RoleBadge } from '../../components/ui/RoleBadge'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Lock, Pencil, Plus, ShieldCheck, Trash2 } from 'lucide-react'
 import { Topbar } from '../../components/layout/Topbar'
@@ -19,6 +21,11 @@ const PRIVILEGES: { value: Privilege; label: string; description: string }[] = [
   { value: 'MANAGE_COMPANIES', label: 'Manage Companies', description: 'Create and edit companies, their logo and subscription' },
   { value: 'MANAGE_PLANS', label: 'Manage Plans & Billing', description: 'Create and edit subscription plans, features and billing overrides' },
   { value: 'MANAGE_ROLES', label: 'Manage Roles', description: 'Create custom roles, tick their privileges, and grant them to staff' },
+  { value: 'MANAGE_CONTRACTS', label: 'Manage Contracts', description: 'Create and edit recurring service contracts, their schedules and renewals' },
+  { value: 'MANAGE_TEMPLATES', label: 'Manage Templates', description: 'Create and edit ticket templates and canned replies for the team' },
+  { value: 'MANAGE_ASSETS', label: 'Manage Assets', description: 'Register and edit customer assets, their warranties and documents' },
+  { value: 'MANAGE_KNOWLEDGE_BASE', label: 'Manage Knowledge Base', description: "Write, publish and archive any article; approve engineers' publish requests; manage categories" },
+  { value: 'VIEW_AUDIT_LOG', label: 'View Audit Log', description: 'Read the security and activity trail: sign-ins, permission changes, record edits' },
 ]
 const privilegeLabel = (p: Privilege) => PRIVILEGES.find((o) => o.value === p)?.label ?? p
 const empty: RoleRequest = { name: '', description: '', privileges: [] }
@@ -41,12 +48,14 @@ export default function RolesPage() {
       <Topbar title="Role Management" subtitle="Create custom roles and tick which privileges they carry" search={false} newTicket={false} actions={<Button onClick={() => setEditing('new')}><Plus size={16} /> New role</Button>} />
       <Page>
         <div className="mb-3 flex items-center gap-2 text-sm font-medium text-muted"><Lock size={14} /> System roles</div>
-        <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-          {system.map((r) => (
-            <Card key={r.id}>
-              <CardBody className="space-y-2 text-sm">
-                <p className="font-semibold">{r.name}</p>
-                <p className="text-xs text-muted">Built in — drives sign-in access directly and can't be edited or removed.</p>
+        <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
+          {/* In the shared order, with the same names and icons as the Users page. */}
+          {ROLE_ORDER.filter((role) => system.some((r) => r.name === role)).map((role) => (
+            <Card key={role}>
+              <CardBody className="space-y-2 pt-5 text-sm">
+                <RoleBadge role={role} />
+                <p className="text-xs text-muted">{ROLE_META[role].description}.</p>
+                <p className="text-xs text-muted">Built in — can't be edited or removed.</p>
               </CardBody>
             </Card>
           ))}
@@ -104,7 +113,7 @@ function RoleFormModal({ role, onClose, onSaved }: { role: RoleDef | 'new'; onCl
         <Field label="Description" hint="Shown to admins when granting this role — optional"><Textarea rows={2} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></Field>
         <div>
           <p className="mb-2 text-sm font-medium">Privileges</p>
-          <p className="mb-2 text-xs text-muted">Only staff (Admin/Engineer) can be granted a custom role. Ticked privileges apply on top of whatever their primary role already allows.</p>
+          <p className="mb-2 text-xs text-muted">Granted to employees on the Users page. Ticked privileges add to what their role allows — a Default employee gets exactly these pages and nothing else. (Admins already hold every privilege.)</p>
           <div className="space-y-2 rounded-lg border border-line p-3">
             {PRIVILEGES.map((p) => (
               <Checkbox key={p.value} label={`${p.label} — ${p.description}`} checked={form.privileges.includes(p.value)} onChange={(e) => togglePrivilege(p.value, e.target.checked)} />

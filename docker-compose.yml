@@ -1,0 +1,174 @@
+# Konoha HelpDesk — 5 containers: nginx (edge), frontend, backend, db (PostgreSQL), redis.
+#
+#   cp .env.docker.example .env            # then set the secrets (DEPLOYMENT.md step 4)
+#   docker compose up -d --build           # app on http://<server>:HTTP_PORT
+#   first sign-in: admin@admin.com / admin  (you must choose a new password)
+#
+# Networks: only nginx publishes a port. db and redis sit on an internal network that only the
+# backend joins, so nothing but the backend can reach them.
+name: konoha-helpdesk
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-konoha_helpdesk}
+      POSTGRES_USER: ${POSTGRES_USER:-konoha}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      TZ: ${TZ:-Asia/Kuala_Lumpur}
+      PGTZ: ${TZ:-Asia/Kuala_Lumpur}
+    # Modest tuning for a small VM (2–4 GB RAM). Raise PG_SHARED_BUFFERS to ~25% of RAM on a
+    # bigger host. Queries slower than 500 ms are written to the db container's log.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS:-256MB}
+      - -c
+      - effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-768MB}
+      - -c
+      - work_mem=8MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - max_connections=100
+      - -c
+      - log_min_duration_statement=500
+    shm_size: 256mb
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    logging: *logging
+    # No published port (and on an internal network, so none can be published): only the backend
+    # talks to it. For a console use `docker compose exec db psql -U konoha -d konoha_helpdesk`.
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # AOF persistence so login lockouts survive a restart; every key the app writes has a TTL,
+    # so volatile-lru is a safe eviction policy if the memory cap is ever reached.
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+      - --maxmemory
+      - 128mb
+      - --maxmemory-policy
+      - volatile-lru
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    volumes:
+      - redisdata:/data
+    networks: [data]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging: *logging
+
+  backend:
+    build: ./backend
+    image: konoha-helpdesk/backend:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: ${POSTGRES_DB:-konoha_helpdesk}
+      DB_USERNAME: ${POSTGRES_USER:-konoha}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      MEDIA_PATH: /app/media
+      TZ: ${TZ:-Asia/Kuala_Lumpur}
+      # Behind nginx: rate-limit per real client IP (nginx overwrites X-Forwarded-For).
+      TRUST_FORWARDED_FOR: "true"
+      # Rate-limit + login-lockout counters live in Redis (shared, survive restarts).
+      APP_STORE_TYPE: ${APP_STORE_TYPE:-redis}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      # Flyway owns the schema; Hibernate only checks it.
+      DDL_AUTO: ${DDL_AUTO:-validate}
+      JAVA_OPTS: ${JAVA_OPTS:--XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError}
+    volumes:
+      - media:/app/media
+    networks: [web, data]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health/liveness >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    logging: *logging
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: /api
+    image: konoha-helpdesk/frontend:latest
+    restart: unless-stopped
+    networks: [web]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    logging: *logging
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      # HTTPS (DEPLOYMENT.md step 9): uncomment after switching to nginx/https.conf.example
+      # - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    networks: [web]
+    # restart: nginx resolves "backend"/"frontend" once at startup; when `up -d --build` recreates
+    # them (new IPs), Compose restarts nginx too, instead of leaving it on the old IPs (502s).
+    depends_on:
+      backend:
+        condition: service_healthy
+        restart: true
+      frontend:
+        condition: service_healthy
+        restart: true
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/nginx-health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    logging: *logging
+
+networks:
+  web:
+  data:
+    internal: true
+
+volumes:
+  pgdata:
+  media:
+  redisdata:

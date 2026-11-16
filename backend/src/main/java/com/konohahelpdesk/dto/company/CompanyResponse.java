@@ -30,6 +30,10 @@ public class CompanyResponse {
     /** Engineer/admin notified on every new ticket for this company; null when none set. */
     private com.konohahelpdesk.dto.user.UserResponse mainEngineer;
 
+    /** SLA clock configuration. Populated by CompanyService, not by {@link #from}. */
+    private boolean businessHoursEnabled;
+    private java.util.List<BusinessHoursDto> businessHours;
+
     public static CompanyResponse from(Company c) {
         CompanyResponse r = new CompanyResponse();
         r.id = c.getId();
@@ -40,7 +44,8 @@ public class CompanyResponse {
         r.logoUrl = c.getLogoId() == null ? null : "/api/media/" + c.getLogoId();
         r.createdAt = c.getCreatedAt();
         r.updatedAt = c.getUpdatedAt();
-        r.mainEngineer = c.getMainEngineer() == null ? null : com.konohahelpdesk.dto.user.UserResponse.from(c.getMainEngineer());
+        r.mainEngineer = c.getMainEngineer() == null ? null : com.konohahelpdesk.dto.user.UserResponse.publicRef(c.getMainEngineer());
+        r.businessHoursEnabled = c.isBusinessHoursEnabled();
         return r;
     }
 
@@ -66,6 +71,11 @@ public class CompanyResponse {
     public void setEngineers(java.util.List<com.konohahelpdesk.dto.user.UserResponse> engineers) { this.engineers = engineers; }
     public com.konohahelpdesk.dto.user.UserResponse getCompanyAdmin() { return companyAdmin; }
     public void setCompanyAdmin(com.konohahelpdesk.dto.user.UserResponse companyAdmin) { this.companyAdmin = companyAdmin; }
+    public boolean isBusinessHoursEnabled() { return businessHoursEnabled; }
+    public void setBusinessHoursEnabled(boolean businessHoursEnabled) { this.businessHoursEnabled = businessHoursEnabled; }
+    public java.util.List<BusinessHoursDto> getBusinessHours() { return businessHours; }
+    public void setBusinessHours(java.util.List<BusinessHoursDto> businessHours) { this.businessHours = businessHours; }
+
     public com.konohahelpdesk.dto.user.UserResponse getMainEngineer() { return mainEngineer; }
     public void setMainEngineer(com.konohahelpdesk.dto.user.UserResponse mainEngineer) { this.mainEngineer = mainEngineer; }
 }

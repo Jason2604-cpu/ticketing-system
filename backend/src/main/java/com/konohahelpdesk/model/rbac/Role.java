@@ -31,8 +31,10 @@ public class Role {
     @Column(length = 200)
     private String description;
 
-    /** False for the four seeded system rows; true for anything created via Role Management. */
-    @Column(nullable = false)
+    /** False for the four seeded system rows; true for anything created via Role Management.
+     *  columnDefinition carries an explicit default so ddl-auto=update can add this column
+     *  to the pre-existing (non-empty) roles table without Postgres rejecting the ALTER. */
+    @Column(nullable = false, columnDefinition = "boolean not null default false")
     private boolean custom = false;
 
     /** Only meaningful for custom rows — system rows carry no explicit privileges. */
@@ -50,5 +52,12 @@ public class Role {
     public boolean isCustom() { return custom; }
     public void setCustom(boolean custom) { this.custom = custom; }
     public Set<Privilege> getPrivileges() { return privileges; }
-    public void setPrivileges(Set<Privilege> privileges) { this.privileges = privileges == null ? new HashSet<>() : privileges; }
+    /**
+     * Changes the set in place. Replacing the field with a new (e.g. immutable Set.copyOf) set made
+     * Hibernate's merge try to clear() it, so editing a role's privileges failed with a 500.
+     */
+    public void setPrivileges(Set<Privilege> privileges) {
+        this.privileges.clear();
+        if (privileges != null) this.privileges.addAll(privileges);
+    }
 }

@@ -11,6 +11,7 @@ public class NotificationResponse {
     private String title;
     private String body;
     private Long ticketId;
+    private String link;
     private boolean read;
     private LocalDateTime createdAt;
 
@@ -21,6 +22,7 @@ public class NotificationResponse {
         r.title = n.getTitle();
         r.body = n.getBody();
         r.ticketId = n.getTicketId();
+        r.link = n.getLink();
         r.read = n.isRead();
         r.createdAt = n.getCreatedAt();
         return r;
@@ -31,6 +33,8 @@ public class NotificationResponse {
     public String getTitle() { return title; }
     public String getBody() { return body; }
     public Long getTicketId() { return ticketId; }
+    /** In-app path to open; when null, the UI opens {@link #getTicketId()} instead. */
+    public String getLink() { return link; }
     public boolean isRead() { return read; }
     public LocalDateTime getCreatedAt() { return createdAt; }
 }

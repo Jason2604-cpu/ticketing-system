@@ -32,8 +32,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try { await authApi.logout() } finally { setUser(null) }
   }, [])
 
-  // Primary role OR an additively-granted one (e.g. an Engineer granted Admin) counts.
-  const hasRole = useCallback((...roles: Role[]) => !!user && (roles.includes(user.role) || !!user.additionalRoles?.some((r) => roles.includes(r))), [user])
+  // One role per user. (Employees used to be able to hold Engineer AND Admin; now Admin simply
+  // includes everything an Engineer can do, so every check that lets engineers in lists ADMIN too.)
+  const hasRole = useCallback((...roles: Role[]) => !!user && roles.includes(user.role), [user])
 
   // Whether the user holds a given privilege via any custom (Role Management) role they've been granted.
   const hasPrivilege = useCallback((privilege: Privilege) => !!user?.customRoles?.some((r) => r.privileges.includes(privilege)), [user])

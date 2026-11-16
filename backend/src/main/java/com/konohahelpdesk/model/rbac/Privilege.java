@@ -14,7 +14,27 @@ public enum Privilege {
     /** Plans, features and per-company subscription overrides. */
     MANAGE_PLANS("Manage Plans & Billing", "Create and edit subscription plans, features and billing overrides"),
     /** Creating/editing/deleting custom roles and granting them to users. */
-    MANAGE_ROLES("Manage Roles", "Create custom roles, tick their privileges, and grant them to staff");
+    MANAGE_ROLES("Manage Roles", "Create custom roles, tick their privileges, and grant them to staff"),
+    /** Everything under /api/contracts — recurring service contracts and their visit schedules. */
+    MANAGE_CONTRACTS("Manage Contracts", "Create and edit recurring service contracts, their schedules and renewals"),
+    /** Read-only access to /api/audit — the security and activity trail. Never grants write anywhere. */
+    VIEW_AUDIT_LOG("View Audit Log", "Read the security and activity trail: sign-ins, permission changes, record edits"),
+    /** Everything under /api/templates — ticket templates and canned replies. */
+    MANAGE_TEMPLATES("Manage Templates", "Create and edit ticket templates and canned replies for the team"),
+    /**
+     * Writes under /api/assets — the customer asset register. Reading assets is NOT gated on this:
+     * customers see their own equipment through their subscription's ASSET_MANAGEMENT feature, and
+     * staff read within their company scope. This privilege is what lets a non-admin create, edit
+     * and delete them.
+     */
+    MANAGE_ASSETS("Manage Assets", "Register and edit customer assets, their warranties and documents"),
+    /**
+     * Everything under /api/kb/manage, including the actions Engineers can't take: publishing
+     * (Internal or Public), declining a publish request, archiving, and categories. Admin and this
+     * privilege are the only ways to publish an article.
+     */
+    MANAGE_KNOWLEDGE_BASE("Manage Knowledge Base",
+        "Write, publish and archive any article; approve engineers' publish requests; manage categories");
 
     private final String label;
     private final String description;

@@ -48,6 +48,7 @@ public class TeamService {
         this.audit = audit;
     }
 
+    @Transactional(readOnly = true)
     public List<UserResponse> members(Long companyId) {
         return userRepository.findByCompanyIdAndStatusNot(companyId, UserStatus.IS_DELETED).stream()
             .map(UserResponse::from).toList();
@@ -75,7 +76,7 @@ public class TeamService {
         user.setStatus(UserStatus.INVITED);
         User saved = userRepository.save(user);
 
-        audit.event("TEAM_MEMBER_INVITED", "companyId=" + companyId + " userId=" + saved.getId() + " by=" + actor.getId());
+        audit.event("TEAM_MEMBER_INVITED", AuditLogger.describe(saved) + " · role=" + saved.getRole());
         accountService.sendActivation(saved);
         return UserResponse.from(saved);
     }
@@ -99,7 +100,7 @@ public class TeamService {
             throw new BusinessRuleException("The user must activate their account through the emailed link first");
         }
         user.setStatus(status);
-        audit.event("TEAM_MEMBER_STATUS", "companyId=" + companyId + " userId=" + userId + " status=" + status);
+        audit.event("TEAM_MEMBER_STATUS", AuditLogger.describe(user) + " · status=" + status);
         return UserResponse.from(userRepository.save(user));
     }
 
@@ -120,9 +121,10 @@ public class TeamService {
         }
         Roles next = admin ? Roles.CUSTOMER_ADMIN : Roles.CUSTOMER;
         if (user.getRole() == next) return UserResponse.from(user);
+        Roles previous = user.getRole();
         user.setRole(next);
         User saved = userRepository.save(user);
-        audit.event("TEAM_MEMBER_ADMIN_TOGGLED", "companyId=" + companyId + " userId=" + userId + " admin=" + admin);
+        audit.event("TEAM_MEMBER_ADMIN_TOGGLED", AuditLogger.describe(saved) + " · " + previous + " -> " + next);
         return UserResponse.from(saved);
     }
 

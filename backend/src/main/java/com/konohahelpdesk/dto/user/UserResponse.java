@@ -25,14 +25,36 @@ public class UserResponse {
     /** GET this (with the auth cookie) to load the photo; null when none. */
     private String photoUrl;
     private NotificationPreferences notifications;
+    /** True for the default admin until they replace admin/admin — the UI sends them to /change-password. */
+    private boolean mustChangePassword;
+
+    /**
+     * Feature codes enabled by the user's company subscription (customers only; null for staff,
+     * who are not gated by a plan). Sent with /auth/me so the client portal can hide what the
+     * company hasn't paid for without a round trip per feature — the API still enforces it.
+     */
+    private java.util.List<String> companyFeatures;
     /** Engineers only: companies they look after. Populated by the admin listing. */
     private java.util.List<CompanyRef> assignedCompanies;
-    /** Additive RBAC: roles granted on top of the primary role, e.g. an ENGINEER also granted ADMIN. */
-    private java.util.List<Roles> additionalRoles;
     /** Role Management: admin-created custom roles (with their privileges) granted to this user. */
     private java.util.List<RoleResponse.Ref> customRoles;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+
+    /**
+     * Just enough to show a person next to something (name, avatar, role). For responses that
+     * people outside user management can read — a company's main engineer is visible to that
+     * company's own customers, who have no business with the engineer's phone, email or settings.
+     */
+    public static UserResponse publicRef(User u) {
+        UserResponse r = new UserResponse();
+        r.id = u.getId();
+        r.firstName = u.getFirstName();
+        r.lastName = u.getLastName();
+        r.role = u.getRole();
+        r.photoUrl = u.getPhotoId() == null ? null : "/api/media/" + u.getPhotoId();
+        return r;
+    }
 
     public static UserResponse from(User u) {
         UserResponse r = new UserResponse();
@@ -50,6 +72,7 @@ public class UserResponse {
         }
         r.photoUrl = u.getPhotoId() == null ? null : "/api/media/" + u.getPhotoId();
         r.notifications = NotificationPreferences.from(u);
+        r.mustChangePassword = u.isMustChangePassword();
         r.createdAt = u.getCreatedAt();
         r.updatedAt = u.getUpdatedAt();
         return r;
@@ -66,11 +89,13 @@ public class UserResponse {
     public Long getCompanyId() { return companyId; }
     public String getCompanyName() { return companyName; }
     public String getPhotoUrl() { return photoUrl; }
+    public java.util.List<String> getCompanyFeatures() { return companyFeatures; }
+    public void setCompanyFeatures(java.util.List<String> companyFeatures) { this.companyFeatures = companyFeatures; }
+
     public NotificationPreferences getNotifications() { return notifications; }
+    public boolean isMustChangePassword() { return mustChangePassword; }
     public java.util.List<CompanyRef> getAssignedCompanies() { return assignedCompanies; }
     public void setAssignedCompanies(java.util.List<CompanyRef> assignedCompanies) { this.assignedCompanies = assignedCompanies; }
-    public java.util.List<Roles> getAdditionalRoles() { return additionalRoles; }
-    public void setAdditionalRoles(java.util.List<Roles> additionalRoles) { this.additionalRoles = additionalRoles; }
     public java.util.List<RoleResponse.Ref> getCustomRoles() { return customRoles; }
     public void setCustomRoles(java.util.List<RoleResponse.Ref> customRoles) { this.customRoles = customRoles; }
 

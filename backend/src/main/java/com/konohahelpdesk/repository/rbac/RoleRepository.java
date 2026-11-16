@@ -12,5 +12,7 @@ public interface RoleRepository extends JpaRepository<Role, Long> {
     Optional<Role> findByName(String name);
     boolean existsByNameIgnoreCase(String name);
     List<Role> findAllByOrderByNameAsc();
-    List<Role> findByCustomTrueOrderByNameAsc();
+    /** Just the names — what RoleSeeder needs, without loading every role's privilege set. */
+    @org.springframework.data.jpa.repository.Query("select r.name from Role r")
+    java.util.List<String> findAllNames();
 }

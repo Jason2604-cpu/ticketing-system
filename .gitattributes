@@ -1,0 +1,14 @@
+# Files that run on the Linux Docker host / inside containers must keep LF line endings,
+# even when the repo is checked out on Windows (a CRLF shell script fails with "bad interpreter").
+*.sh          text eol=lf
+Dockerfile    text eol=lf
+*.conf        text eol=lf
+*.yml         text eol=lf
+*.yaml        text eol=lf
+*.sql         text eol=lf
+.env*         text eol=lf
+*.properties  text eol=lf
+
+# Windows helpers stay CRLF.
+*.bat         text eol=crlf
+*.cmd         text eol=crlf
