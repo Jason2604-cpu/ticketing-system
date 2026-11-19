@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Paperclip, Send } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Send } from 'lucide-react'
 import { Topbar } from '../../components/layout/Topbar'
 import { Page } from '../../components/layout/AppShell'
 import { Card } from '../../components/ui/Card'
@@ -11,8 +11,12 @@ import { Alert } from '../../components/ui/Misc'
 import { useToast } from '../../components/ui/useToast'
 import { priorityStyles } from '../../components/ui/badgeStyles'
 import { TemplatePicker } from '../../components/ui/TemplatePicker'
+import { FileDropZone } from '../../components/ui/FileDropZone'
 import { SuggestedArticles } from '../kb/SuggestedArticles'
 import { ticketsApi } from '../../api/tickets'
+import { companiesApi } from '../../api/companies'
+import { useAuth } from '../../auth/useAuth'
+import { storageRemaining } from '../../lib/attachments'
 import { cn } from '../../lib/cn'
 import { errorMessage } from '../../lib/api'
 import type { TicketCategory, TicketPriority, TicketTemplate } from '../../types'
@@ -32,6 +36,11 @@ export default function NewTicketPage() {
   const [description, setDescription] = useState('')
   const [steps, setSteps] = useState('')
   const [files, setFiles] = useState<File[]>([])
+  // The company's storage left, so a file that would be refused on upload is refused here instead —
+  // before the ticket exists. Same query (and cache entry) as Settings → Company Info.
+  const { user } = useAuth()
+  const companyId = user?.companyId
+  const company = useQuery({ queryKey: ['companies', companyId], queryFn: () => companiesApi.get(Number(companyId)), enabled: !!companyId })
 
   const create = useMutation({
     mutationFn: async () => {
@@ -110,13 +119,7 @@ export default function NewTicketPage() {
 
             <div>
               <p className="mb-1.5 text-sm font-medium">Attachments <span className="font-normal text-muted">(optional)</span></p>
-              <label className="flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-line px-6 py-8 text-center hover:border-brand-500 hover:bg-brand-50/40">
-                <Paperclip size={20} className="text-muted" />
-                <p className="mt-2 text-sm">Drag files here or <span className="font-medium text-brand-600">browse</span></p>
-                <p className="text-xs text-muted">PNG, JPG, PDF, CSV — up to 20 MB</p>
-                <input type="file" multiple hidden accept=".png,.jpg,.jpeg,.webp,.pdf,.csv,.txt" onChange={(e) => setFiles([...(e.target.files ?? [])].slice(0, 10))} />
-              </label>
-              {files.length > 0 && <p className="mt-2 text-xs text-muted">{files.length} file{files.length > 1 ? 's' : ''}: {files.map((f) => f.name).join(', ')}</p>}
+              <FileDropZone files={files} onChange={setFiles} storageRemainingBytes={storageRemaining(company.data?.subscription)} />
             </div>
 
             <div className="flex justify-between border-t border-line pt-5">

@@ -18,9 +18,19 @@ import { companiesApi } from '../../api/companies'
 import { useAuth } from '../../auth/useAuth'
 import { api, errorMessage } from '../../lib/api'
 import { formatShortDate, shortName } from '../../lib/format'
-import type { TicketPriority, TicketStatus } from '../../types'
+import type { SlaState, TicketPriority, TicketStatus, TicketSummary } from '../../types'
 
-const STATUS_OPTS = [{ value: '', label: 'All Statuses' }, { value: 'OPEN', label: 'Open' }, { value: 'IN_PROGRESS', label: 'In Progress' }, { value: 'RESOLVED', label: 'Resolved' }, { value: 'CLOSED', label: 'Closed' }] as const
+const STATUS_OPTS = [{ value: '', label: 'All Statuses' }, { value: 'OPEN', label: 'Open' }, { value: 'IN_PROGRESS', label: 'In Progress' }, { value: 'ON_HOLD', label: 'On Hold' }, { value: 'RESOLVED', label: 'Resolved' }, { value: 'CLOSED', label: 'Closed' }] as const
+/**
+ * The one SLA badge a row shows (quiet: nothing when all is well). A clock in trouble wins —
+ * resolution first, then first response — and a paused resolution clock shows as paused.
+ */
+function rowSla(t: TicketSummary): SlaState | undefined {
+  if (t.resolutionSla === 'BREACHED' || t.resolutionSla === 'AT_RISK') return t.resolutionSla
+  if (t.responseSla === 'BREACHED' || t.responseSla === 'AT_RISK') return t.responseSla
+  return t.resolutionSla === 'PAUSED' ? 'PAUSED' : t.responseSla
+}
+
 const PRIORITY_OPTS = [{ value: '', label: 'All Priorities' }, { value: 'CRITICAL', label: 'Critical' }, { value: 'HIGH', label: 'High' }, { value: 'MEDIUM', label: 'Medium' }, { value: 'LOW', label: 'Low' }] as const
 
 export default function TicketsPage() {
@@ -28,7 +38,7 @@ export default function TicketsPage() {
   const navigate = useNavigate()
   const qc = useQueryClient()
   const toast = useToast()
-  const { hasRole } = useAuth()
+  const { hasRole, user } = useAuth()
   const isStaff = hasRole('ADMIN', 'ENGINEER')
 
   const urlQ = params.get('q') ?? ''
@@ -37,6 +47,10 @@ export default function TicketsPage() {
   const status = (params.get('status') ?? '') as TicketStatus | ''
   const priority = (params.get('priority') ?? '') as TicketPriority | ''
   const companyId = params.get('companyId') ? Number(params.get('companyId')) : ''
+  // Set by the dashboard's "waiting for a first response" banner. No dropdown for these two, so
+  // they show as removable chips next to the filters.
+  const awaiting = params.get('awaiting') === 'first-response'
+  const assigneeId = params.get('assigneeId') ? Number(params.get('assigneeId')) : ''
   const [newOpen, setNewOpen] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
 
@@ -46,8 +60,8 @@ export default function TicketsPage() {
     setParams(next, { replace: true })
   }
 
-  const filter: TicketFilter = { q, status, priority, companyId }
-  const hasFilter = Boolean(q || status || priority || companyId)
+  const filter: TicketFilter = { q, status, priority, companyId, assigneeId, awaitingResponse: awaiting || undefined }
+  const hasFilter = Boolean(q || status || priority || companyId || assigneeId || awaiting)
   // Unfiltered, the list IS "all tickets": share one cache entry (one request per poll instead of
   // two identical ones). The "of N" total only needs its own request while a filter is applied,
   // and it doesn't have to poll.
@@ -77,6 +91,16 @@ export default function TicketsPage() {
     onError: (e) => { invalidate(); toast(errorMessage(e), 'error') },
   })
 
+  // "Awaiting first response" spans several statuses, so picking a status replaces it.
+  const setStatusFilter = (v: string) => {
+    const next = new URLSearchParams(params)
+    next.delete('awaiting')
+    if (v) next.set('status', v); else next.delete('status')
+    setParams(next, { replace: true })
+  }
+  const assigneeName = assigneeId === user?.id ? 'you'
+    : (() => { const a = assignees.data?.find((u) => u.id === assigneeId); return a ? `${a.firstName} ${a.lastName}` : `#${assigneeId}` })()
+
   const companyOpts = useMemo(() => [{ value: 0, label: 'All Companies' }, ...(companies.data ?? []).map((c) => ({ value: c.id, label: c.name }))], [companies.data])
 
   return (
@@ -99,9 +123,11 @@ export default function TicketsPage() {
 
         <div className="mt-3 flex items-center gap-3">
           <Filter size={16} className="text-muted" />
-          <SelectMenu className="w-44" size="sm" value={status} onChange={(v) => setParam('status', v)} options={[...STATUS_OPTS]} />
+          <SelectMenu className="w-44" size="sm" value={status} onChange={setStatusFilter} options={[...STATUS_OPTS]} />
           <SelectMenu className="w-44" size="sm" value={priority} onChange={(v) => setParam('priority', v)} options={[...PRIORITY_OPTS]} />
           {isStaff && <SelectMenu className="w-52" size="sm" value={companyId || 0} onChange={(v) => setParam('companyId', v ? String(v) : '')} options={companyOpts} />}
+          {awaiting && <FilterChip label="Awaiting first response" onRemove={() => setParam('awaiting', '')} />}
+          {assigneeId !== '' && <FilterChip label={`Assigned to ${assigneeName}`} onRemove={() => setParam('assigneeId', '')} />}
           <span className="ml-auto whitespace-nowrap text-sm text-muted">{rows.length} of {all.data?.length ?? 0} tickets</span>
         </div>
 
@@ -141,9 +167,9 @@ export default function TicketsPage() {
                     </Link>
                   </Td>
                   <Td><PriorityBadge priority={t.priority} /></Td>
-                  <Td><StatusBadge status={t.status} /></Td>
-                  {/* Quiet mode: only shows a badge when the ticket needs attention. */}
-                  <Td><SlaBadge state={t.resolutionSla === 'BREACHED' || t.resolutionSla === 'AT_RISK' ? t.resolutionSla : t.responseSla} quiet /></Td>
+                  <Td><span title={t.status === 'ON_HOLD' ? t.holdReasonLabel : undefined}><StatusBadge status={t.status} /></span></Td>
+                  {/* Quiet mode: only shows a badge when the ticket needs attention (or is paused). */}
+                  <Td><SlaBadge state={rowSla(t)} quiet /></Td>
                   <Td>
                     {t.assignee ? (
                       <span className="inline-flex items-center gap-2"><Avatar size="sm" firstName={t.assignee.firstName} lastName={t.assignee.lastName} src={api.mediaUrl(t.assignee.photoUrl)} /> {shortName(t.assignee.firstName, t.assignee.lastName)}</span>
@@ -161,5 +187,14 @@ export default function TicketsPage() {
       </Page>
       <NewTicketModal open={newOpen} onClose={() => setNewOpen(false)} />
     </>
+  )
+}
+
+function FilterChip({ label, onRemove }: { label: string; onRemove: () => void }) {
+  return (
+    <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-brand-200 bg-brand-50 py-1 pl-3 pr-1.5 text-xs font-medium text-brand-700">
+      {label}
+      <button type="button" onClick={onRemove} className="rounded-full p-0.5 hover:bg-brand-100" aria-label={`Remove filter: ${label}`}><X size={12} /></button>
+    </span>
   )
 }

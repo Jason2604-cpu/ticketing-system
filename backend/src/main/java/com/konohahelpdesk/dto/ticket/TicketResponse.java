@@ -2,6 +2,7 @@ package com.konohahelpdesk.dto.ticket;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.konohahelpdesk.model.media.MediaFile;
+import com.konohahelpdesk.model.ticket.HoldReason;
 import com.konohahelpdesk.model.ticket.SlaState;
 import com.konohahelpdesk.model.ticket.Ticket;
 import com.konohahelpdesk.model.ticket.TicketCategory;
@@ -25,6 +26,8 @@ public class TicketResponse {
     private Long companyId;
     private String companyName;
     private Person createdBy;
+    /** Who the ticket is for. Absent on a company-level ticket. */
+    private Person requester;
     private Person assignee;
     private LocalDateTime responseDueAt;
     private LocalDateTime resolutionDueAt;
@@ -36,6 +39,13 @@ public class TicketResponse {
     private SlaState resolutionSla;
     private LocalDateTime resolvedAt;
     private LocalDateTime closedAt;
+    // ON_HOLD only (absent otherwise). The staff note behind a hold is an internal comment.
+    private HoldReason holdReason;
+    private String holdReasonLabel;
+    private LocalDateTime holdUntil;
+    private LocalDateTime slaPausedAt;
+    /** Working minutes on hold during the current SLA clock. */
+    private long slaPausedMinutes;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
     private long commentCount;
@@ -69,6 +79,7 @@ public class TicketResponse {
         r.companyId = t.getCompany().getId();
         r.companyName = t.getCompany().getName();
         r.createdBy = Person.of(t.getCreatedBy());
+        r.requester = Person.of(t.getRequester());
         r.assignee = Person.of(t.getAssignee());
         r.responseDueAt = t.getResponseDueAt();
         r.resolutionDueAt = t.getResolutionDueAt();
@@ -77,6 +88,11 @@ public class TicketResponse {
         r.resolutionBreachedAt = t.getResolutionBreachedAt();
         r.resolvedAt = t.getResolvedAt();
         r.closedAt = t.getClosedAt();
+        r.holdReason = t.getHoldReason();
+        r.holdReasonLabel = t.getHoldReason() == null ? null : t.getHoldReason().label();
+        r.holdUntil = t.getHoldUntil();
+        r.slaPausedAt = t.getSlaPausedAt();
+        r.slaPausedMinutes = t.getSlaPausedMinutes();
         r.createdAt = t.getCreatedAt();
         r.updatedAt = t.getUpdatedAt();
         r.commentCount = commentCount;
@@ -102,6 +118,7 @@ public class TicketResponse {
     public Long getCompanyId() { return companyId; }
     public String getCompanyName() { return companyName; }
     public Person getCreatedBy() { return createdBy; }
+    public Person getRequester() { return requester; }
     public Person getAssignee() { return assignee; }
     public LocalDateTime getResponseDueAt() { return responseDueAt; }
     public LocalDateTime getResolutionDueAt() { return resolutionDueAt; }
@@ -118,6 +135,11 @@ public class TicketResponse {
     public LocalDateTime getFirstResponseAt() { return firstResponseAt; }
     public LocalDateTime getResolvedAt() { return resolvedAt; }
     public LocalDateTime getClosedAt() { return closedAt; }
+    public HoldReason getHoldReason() { return holdReason; }
+    public String getHoldReasonLabel() { return holdReasonLabel; }
+    public LocalDateTime getHoldUntil() { return holdUntil; }
+    public LocalDateTime getSlaPausedAt() { return slaPausedAt; }
+    public long getSlaPausedMinutes() { return slaPausedMinutes; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }
     public long getCommentCount() { return commentCount; }

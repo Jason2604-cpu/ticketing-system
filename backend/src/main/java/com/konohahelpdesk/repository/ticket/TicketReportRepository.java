@@ -154,6 +154,10 @@ public interface TicketReportRepository extends JpaRepository<Ticket, Long> {
      *
      * Tickets with no target for their priority are never counted — a plan that sets no SLA must
      * not drag compliance down.
+     *
+     * ON HOLD: the resolution clock is read at sla_paused_at instead of now (it is NULL whenever a
+     * ticket is not on hold), exactly like SlaCalculator.resolutionState — a paused ticket whose
+     * deadline was still ahead when the hold started stays unscored instead of counting as missed.
      */
     @Query(value = """
         select
@@ -164,7 +168,7 @@ public interface TicketReportRepository extends JpaRepository<Ticket, Long> {
                              and ((coalesce(resolved_at, closed_at) is not null
                                      and coalesce(resolved_at, closed_at) > resolution_due_at)
                                   or (coalesce(resolved_at, closed_at) is null
-                                     and resolution_due_at < :now))),
+                                     and resolution_due_at < coalesce(sla_paused_at, :now)))),
           count(*) filter (where response_due_at is not null
                              and coalesce(first_response_at, resolved_at, closed_at) is not null
                              and coalesce(first_response_at, resolved_at, closed_at) <= response_due_at),
@@ -175,7 +179,7 @@ public interface TicketReportRepository extends JpaRepository<Ticket, Long> {
                                      and response_due_at < :now))),
           count(*) filter (where resolution_due_at is not null
                              and (coalesce(resolved_at, closed_at) is not null
-                                  or resolution_due_at < :now)),
+                                  or resolution_due_at < coalesce(sla_paused_at, :now))),
           count(*)
         from tickets
         where company_id in (:companyIds)
@@ -197,16 +201,20 @@ public interface TicketReportRepository extends JpaRepository<Ticket, Long> {
      *
      * Counts TICKETS, not clocks — a ticket that blew both deadlines is one row here, but two in
      * the met/missed columns above. The two numbers are in different units on purpose.
+     *
+     * ON_HOLD tickets are included (still open; their first-response clock still runs), with the
+     * resolution clock read at the start of the hold — same rule as slaCounts.
      */
     @Query("""
         select count(t) from Ticket t
         where t.company.id in :companyIds
           and t.status in (com.konohahelpdesk.model.ticket.TicketStatus.OPEN,
-                           com.konohahelpdesk.model.ticket.TicketStatus.IN_PROGRESS)
+                           com.konohahelpdesk.model.ticket.TicketStatus.IN_PROGRESS,
+                           com.konohahelpdesk.model.ticket.TicketStatus.ON_HOLD)
           and (
                 (t.responseDueAt   is not null and t.firstResponseAt is null     and t.responseDueAt < :now)
              or (t.responseDueAt   is not null and t.firstResponseAt is not null and t.firstResponseAt > t.responseDueAt)
-             or (t.resolutionDueAt is not null and t.resolutionDueAt < :now)
+             or (t.resolutionDueAt is not null and t.resolutionDueAt < coalesce(t.slaPausedAt, :now))
           )
         """)
     long countCurrentlyBreaching(@Param("companyIds") List<Long> companyIds, @Param("now") LocalDateTime now);
@@ -229,7 +237,7 @@ public interface TicketReportRepository extends JpaRepository<Ticket, Long> {
                                   and coalesce(t.resolved_at, t.closed_at) <= t.resolution_due_at),
                count(*) filter (where t.resolution_due_at is not null
                                   and (coalesce(t.resolved_at, t.closed_at) is not null
-                                       or t.resolution_due_at < :now))
+                                       or t.resolution_due_at < coalesce(t.sla_paused_at, :now)))
         from tickets t join companies c on c.id = t.company_id
         where t.company_id in (:companyIds)
           and t.created_at >= :from and t.created_at < :to

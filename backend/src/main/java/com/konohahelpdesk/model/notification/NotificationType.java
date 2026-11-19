@@ -20,5 +20,11 @@ public enum NotificationType {
     /** Sent to Admins and Knowledge Base managers when an engineer asks for an article to be published. */
     KB_PUBLISH_REQUESTED,
     /** Sent back to that engineer when the article is published, declined, or archived instead. */
-    KB_PUBLISH_DECIDED
+    KB_PUBLISH_DECIDED,
+    /** Sent to a customer when staff make them the requester of an existing ticket. */
+    TICKET_REQUESTER_CHANGED,
+    /** Sent to the ticket's requester (or the company's admins) when staff put it on hold. */
+    TICKET_ON_HOLD,
+    /** Sent when an on-hold ticket starts moving again (to the customer side, or to the engineer when a customer reply resumed it). */
+    TICKET_RESUMED
 }

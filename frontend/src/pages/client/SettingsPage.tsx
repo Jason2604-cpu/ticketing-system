@@ -12,6 +12,7 @@ import { isValidEmail } from '../../lib/countries'
 import { Avatar } from '../../components/ui/Avatar'
 import { GenericBadge, UserStatusBadge } from '../../components/ui/Badge'
 import { Alert, ProgressBar } from '../../components/ui/Misc'
+import { PlanUsageRows } from '../../components/ui/PlanUsage'
 import { useToast } from '../../components/ui/useToast'
 import { useAuth } from '../../auth/useAuth'
 import { authApi } from '../../api/auth'
@@ -55,7 +56,7 @@ export default function SettingsPage() {
           <div className="mx-auto max-w-3xl">
             {tab === 'profile' && <ProfileTab />}
             {tab === 'team' && user?.companyId && <TeamTab companyId={user.companyId} />}
-            {tab === 'company' && user?.companyId && <CompanyTab companyId={user.companyId} />}
+            {tab === 'company' && user?.companyId && <CompanyTab companyId={user.companyId} isCustomerAdmin={isCustomerAdmin} />}
             {tab === 'notifications' && <NotificationsTab />}
             {tab === 'security' && <SecurityTab />}
           </div>
@@ -196,28 +197,40 @@ function InviteMemberModal({ open, onClose, companyId }: { open: boolean; onClos
   )
 }
 
-function CompanyTab({ companyId }: { companyId: number }) {
+/**
+ * Company Admins also get Plan Usage — storage, tickets this month and seats against the plan,
+ * the same figures the provider sees — so they can tell a full plan from a broken upload.
+ * Members keep the simple tiles.
+ */
+function CompanyTab({ companyId, isCustomerAdmin }: { companyId: number; isCustomerAdmin: boolean }) {
   const company = useQuery({ queryKey: ['companies', companyId], queryFn: () => companiesApi.get(companyId) })
   const c = company.data
   if (!c) return null
   const sub = c.subscription
   return (
-    <SectionCard title="Company Information" subtitle="Contact support to update company details">
-      <div className="grid grid-cols-2 gap-3">
-        <Item label="Company Name" value={c.name} />
-        <Item label="Plan" value={sub ? (sub.subscriptionType === 'CUSTOM' ? 'Custom' : sub.planName) : '—'} />
-        <Item label="Contact Email" value={c.contactEmail ?? '—'} />
-        <Item label="Member Since" value={formatMonthYear(c.createdAt)} />
-        {sub && <Item label="Team Seats" value={`${sub.usage.activeUsers} of ${sub.limits.maxUsers}`} />}
-        {sub && <Item label="Tickets per month" value={sub.limits.monthlyTicketLimit} />}
-      </div>
-      {sub && (
-        <div className="mt-4">
-          <p className="mb-2 text-xs uppercase tracking-wide text-muted">Enabled features</p>
-          <div className="flex flex-wrap gap-1.5">{sub.features.filter((f) => f.enabled).map((f) => <GenericBadge key={f.code} tone="brand">{f.name}</GenericBadge>)}</div>
+    <>
+      <SectionCard title="Company Information" subtitle="Contact support to update company details">
+        <div className="grid grid-cols-2 gap-3">
+          <Item label="Company Name" value={c.name} />
+          <Item label="Plan" value={sub ? (sub.subscriptionType === 'CUSTOM' ? 'Custom' : sub.planName) : '—'} />
+          <Item label="Contact Email" value={c.contactEmail ?? '—'} />
+          <Item label="Member Since" value={formatMonthYear(c.createdAt)} />
+          {sub && !isCustomerAdmin && <Item label="Team Seats" value={`${sub.usage.activeUsers} of ${sub.limits.maxUsers}`} />}
+          {sub && !isCustomerAdmin && <Item label="Tickets per month" value={sub.limits.monthlyTicketLimit} />}
         </div>
+        {sub && (
+          <div className="mt-4">
+            <p className="mb-2 text-xs uppercase tracking-wide text-muted">Enabled features</p>
+            <div className="flex flex-wrap gap-1.5">{sub.features.filter((f) => f.enabled).map((f) => <GenericBadge key={f.code} tone="brand">{f.name}</GenericBadge>)}</div>
+          </div>
+        )}
+      </SectionCard>
+      {sub && isCustomerAdmin && (
+        <SectionCard title="Plan Usage" subtitle={`What your company has used on the ${sub.subscriptionType === 'CUSTOM' ? 'Custom' : sub.planName ?? ''} plan`}>
+          <PlanUsageRows sub={sub} audience="customer" />
+        </SectionCard>
       )}
-    </SectionCard>
+    </>
   )
 }
 

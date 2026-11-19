@@ -23,6 +23,12 @@ public class CreateTicketRequest {
     /** Required for staff; ignored for customers (always their own company). */
     private Long companyId;
 
+    /**
+     * Staff only, optional: the customer the ticket is for (an active user of {@code companyId}).
+     * Left out = a company-level ticket. Ignored for customers, who are always their own requester.
+     */
+    private Long requesterId;
+
     public String getTitle() { return title; }
     public void setTitle(String title) { this.title = title; }
     public String getDescription() { return description; }
@@ -35,4 +41,6 @@ public class CreateTicketRequest {
     public void setPriority(TicketPriority priority) { this.priority = priority; }
     public Long getCompanyId() { return companyId; }
     public void setCompanyId(Long companyId) { this.companyId = companyId; }
+    public Long getRequesterId() { return requesterId; }
+    public void setRequesterId(Long requesterId) { this.requesterId = requesterId; }
 }

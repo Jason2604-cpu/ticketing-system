@@ -184,7 +184,10 @@ export type UpdateCompanyRequest = Omit<CreateCompanyRequest, 'subscription'>
 
 // ── Tickets ──────────────────────────────────────────────────────────────────
 export type TicketPriority = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW'
-export type TicketStatus = 'OPEN' | 'IN_PROGRESS' | 'RESOLVED' | 'CLOSED'
+/** ON_HOLD: waiting on a part / vendor / visit / the customer — the resolution SLA is paused. */
+export type TicketStatus = 'OPEN' | 'IN_PROGRESS' | 'ON_HOLD' | 'RESOLVED' | 'CLOSED'
+/** Why a ticket is ON_HOLD. Customers see the label; the staff note is an internal comment. */
+export type HoldReason = 'SPARE_PART' | 'VENDOR' | 'SCHEDULED' | 'CUSTOMER_REPLY' | 'OTHER'
 export type TicketCategory = 'TECHNICAL' | 'BILLING' | 'ACCOUNT' | 'FEATURE'
 
 export interface Person { id: number; firstName: string; lastName: string; photoUrl?: string }
@@ -197,13 +200,25 @@ export interface TicketSummary {
   status: TicketStatus
   companyId: number
   companyName: string
+  /** Who typed the ticket in. Never changes. */
   createdBy: Person
+  /** Who the ticket is for (gets its customer notifications). Absent on a company-level ticket. */
+  requester?: Person
   assignee?: Person
   responseDueAt?: string
   resolutionDueAt?: string
   firstResponseAt?: string
   resolvedAt?: string
   closedAt?: string
+  /** ON_HOLD only. */
+  holdReason?: HoldReason
+  holdReasonLabel?: string
+  /** Optional date shown on the ticket (e.g. a booked visit). Display only. */
+  holdUntil?: string
+  /** When the current hold started — the resolution clock is read here while on hold. */
+  slaPausedAt?: string
+  /** Working minutes on hold during the current SLA clock. */
+  slaPausedMinutes?: number
   createdAt: string
   updatedAt: string
   commentCount: number
@@ -214,7 +229,7 @@ export interface TicketSummary {
 }
 
 /** How a ticket stands against one of its SLA clocks. Mirrors the backend SlaState enum. */
-export type SlaState = 'NONE' | 'MET' | 'ON_TRACK' | 'AT_RISK' | 'BREACHED'
+export type SlaState = 'NONE' | 'MET' | 'ON_TRACK' | 'AT_RISK' | 'BREACHED' | 'PAUSED'
 
 // ── Business hours (SLA clock) ───────────────────────────────────────────────
 export type DayOfWeek = 'MONDAY' | 'TUESDAY' | 'WEDNESDAY' | 'THURSDAY' | 'FRIDAY' | 'SATURDAY' | 'SUNDAY'
@@ -241,6 +256,7 @@ export interface Report {
     resolved: number
     open: number
     inProgress: number
+    onHold?: number
     closed: number
     /** WORKING hours (business calendar), matching how SLA deadlines are set — not elapsed time. */
     avgResolutionHours: number
@@ -276,6 +292,7 @@ export interface TicketComment { id: number; author?: Person; body: string; inte
 
 export type NotificationType = 'TICKET_ASSIGNED_TO_YOU' | 'TICKET_ASSIGNED_NOTICE' | 'TICKET_REPLY' | 'TICKET_RESOLVED' | 'TICKET_CLOSED' | 'TICKET_CREATED'
   | 'SLA_BREACH' | 'CONTRACT_RENEWAL_DUE' | 'KB_PUBLISH_REQUESTED' | 'KB_PUBLISH_DECIDED'
+  | 'TICKET_REQUESTER_CHANGED' | 'TICKET_ON_HOLD' | 'TICKET_RESUMED'
 export interface AppNotification {
   id: number; type: NotificationType; title: string; body: string
   ticketId?: number
@@ -294,6 +311,16 @@ export interface CreateTicketRequest {
   priority: TicketPriority
   /** Staff only; customers always create for their own company. */
   companyId?: number
+  /** Staff only, optional: an active user of that company the ticket is for. Omit for a company-level ticket. */
+  requesterId?: number
+}
+
+export interface HoldRequest {
+  reason: HoldReason
+  /** Saved as an internal comment — staff only. */
+  note: string
+  /** "yyyy-MM-ddTHH:mm", optional, must be in the future. */
+  until?: string
 }
 
 // ── Service contracts ───────────────────────────────────────────────────────

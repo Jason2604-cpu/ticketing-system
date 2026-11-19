@@ -15,5 +15,10 @@ public enum SlaState {
     /** Still running, but past app.sla.at-risk-percent of the window. */
     AT_RISK,
     /** The deadline passed without the target being hit. */
-    BREACHED
+    BREACHED,
+    /**
+     * Resolution clock only: the ticket is ON_HOLD and its deadline had not passed when the clock
+     * stopped. The deadline moves out by the paused working time when the ticket resumes.
+     */
+    PAUSED
 }

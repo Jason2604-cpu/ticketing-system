@@ -51,4 +51,10 @@ nginx/certs/*
 # Database dumps / backups
 *.dump
 backups/
-"Claude outputs/" 
+
+# Claude working files (plans, screenshots, patches, archives): local only, never committed
+/Claude outputs/
+
+# SQL: only the Flyway migrations are committed; any other .sql (dumps, scratch) stays local
+*.sql
+!/backend/src/main/resources/db/migration/**/*.sql

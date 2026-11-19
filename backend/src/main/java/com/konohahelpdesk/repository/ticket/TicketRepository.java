@@ -24,7 +24,9 @@ public interface TicketRepository extends JpaRepository<Ticket, Long>, JpaSpecif
      * hasn't recorded yet. Ordered oldest-breach-first so a backlog drains fairly.
      *
      * The response clock only counts while there has been no first reply; the resolution
-     * clock counts until the ticket leaves OPEN/IN_PROGRESS (the `statuses` argument).
+     * clock counts until the ticket leaves OPEN/IN_PROGRESS (the `statuses` argument) and is
+     * paused while it is ON_HOLD. That exclusion has to be in the query, not only in the caller:
+     * oldest-breach-first ordering would otherwise fill every batch with paused tickets.
      */
     @Query("""
         select t from Ticket t
@@ -33,6 +35,7 @@ public interface TicketRepository extends JpaRepository<Ticket, Long>, JpaSpecif
                 (t.responseDueAt   is not null and t.firstResponseAt is null
                    and t.responseDueAt   < :now and t.responseBreachedAt   is null)
              or (t.resolutionDueAt is not null
+                   and t.status <> com.konohahelpdesk.model.ticket.TicketStatus.ON_HOLD
                    and t.resolutionDueAt < :now and t.resolutionBreachedAt is null)
           )
         order by t.responseDueAt asc nulls last, t.resolutionDueAt asc nulls last
@@ -54,17 +57,19 @@ public interface TicketRepository extends JpaRepository<Ticket, Long>, JpaSpecif
         select t.company.id, count(t) from Ticket t
         where t.company.id in :companyIds
           and t.status in (com.konohahelpdesk.model.ticket.TicketStatus.OPEN,
-                           com.konohahelpdesk.model.ticket.TicketStatus.IN_PROGRESS)
+                           com.konohahelpdesk.model.ticket.TicketStatus.IN_PROGRESS,
+                           com.konohahelpdesk.model.ticket.TicketStatus.ON_HOLD)
         group by t.company.id
         """)
     List<Object[]> countOpenByCompany(@Param("companyIds") java.util.Collection<Long> companyIds);
 
-    /** Tickets still being worked (OPEN / IN_PROGRESS) that are assigned to this user. */
+    /** Tickets still being worked (OPEN / IN_PROGRESS / ON_HOLD) that are assigned to this user. */
     @Query("""
         select t from Ticket t
         where t.assignee.id = :userId
           and t.status in (com.konohahelpdesk.model.ticket.TicketStatus.OPEN,
-                           com.konohahelpdesk.model.ticket.TicketStatus.IN_PROGRESS)
+                           com.konohahelpdesk.model.ticket.TicketStatus.IN_PROGRESS,
+                           com.konohahelpdesk.model.ticket.TicketStatus.ON_HOLD)
         """)
     List<Ticket> findActiveByAssigneeId(@Param("userId") Long userId);
 
@@ -72,7 +77,8 @@ public interface TicketRepository extends JpaRepository<Ticket, Long>, JpaSpecif
     @Query("""
         select t.company.id, count(t) from Ticket t
         where t.status in (com.konohahelpdesk.model.ticket.TicketStatus.OPEN,
-                           com.konohahelpdesk.model.ticket.TicketStatus.IN_PROGRESS)
+                           com.konohahelpdesk.model.ticket.TicketStatus.IN_PROGRESS,
+                           com.konohahelpdesk.model.ticket.TicketStatus.ON_HOLD)
         group by t.company.id
         """)
     List<Object[]> countOpenByCompanyAll();

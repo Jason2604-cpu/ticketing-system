@@ -42,7 +42,9 @@ import java.util.stream.Collectors;
 @Service
 public class SlaBreachRecorder {
 
-    private static final List<TicketStatus> ACTIVE = List.of(TicketStatus.OPEN, TicketStatus.IN_PROGRESS);
+    // ON_HOLD is included for the FIRST-RESPONSE clock, which a hold does not pause. Its paused
+    // resolution clock is excluded in the candidate query and again below.
+    private static final List<TicketStatus> ACTIVE = List.of(TicketStatus.OPEN, TicketStatus.IN_PROGRESS, TicketStatus.ON_HOLD);
     private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("d MMM yyyy, HH:mm");
 
     private final TicketRepository tickets;
@@ -77,6 +79,7 @@ public class SlaBreachRecorder {
                 && t.getResponseBreachedAt() == null
                 && now.isAfter(t.getResponseDueAt());
             boolean resolutionBreach = t.getResolutionDueAt() != null
+                && t.getStatus() != TicketStatus.ON_HOLD
                 && t.getResolutionBreachedAt() == null
                 && now.isAfter(t.getResolutionDueAt());
             if (!responseBreach && !resolutionBreach) continue;

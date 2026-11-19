@@ -2,6 +2,7 @@ package com.konohahelpdesk.controller.ticket;
 
 import com.konohahelpdesk.dto.ticket.CommentRequest;
 import com.konohahelpdesk.dto.ticket.CreateTicketRequest;
+import com.konohahelpdesk.dto.ticket.HoldRequest;
 import com.konohahelpdesk.dto.ticket.TicketResponse;
 import com.konohahelpdesk.dto.user.UserResponse;
 import com.konohahelpdesk.model.ticket.TicketPriority;
@@ -39,8 +40,10 @@ public class TicketController {
                                                      @RequestParam(required = false) TicketStatus status,
                                                      @RequestParam(required = false) TicketPriority priority,
                                                      @RequestParam(required = false) Long assigneeId,
-                                                     @RequestParam(required = false) String q) {
-        return ResponseEntity.ok(tickets.list(currentUser.get(), companyId, status, priority, assigneeId, q));
+                                                     @RequestParam(required = false) String q,
+                                                     // true = still waiting for a first public staff reply (the dashboard banner)
+                                                     @RequestParam(required = false) Boolean awaitingResponse) {
+        return ResponseEntity.ok(tickets.list(currentUser.get(), companyId, status, priority, assigneeId, q, awaitingResponse));
     }
 
     /**
@@ -75,9 +78,27 @@ public class TicketController {
         return ResponseEntity.status(HttpStatus.CREATED).body(tickets.create(currentUser.get(), request));
     }
 
+    /** Any status except ON_HOLD, which needs a reason — see {@link #putOnHold}. Leaving ON_HOLD goes through here. */
     @PatchMapping("/{id}/status")
     public ResponseEntity<TicketResponse> setStatus(@PathVariable Long id, @RequestParam TicketStatus status) {
         return ResponseEntity.ok(tickets.setStatus(currentUser.get(), id, status));
+    }
+
+    /**
+     * Staff-only. Body: {"reason": "SPARE_PART", "note": "…", "until": "2026-11-20T10:00"}.
+     * Pauses the resolution SLA; the note is saved as an internal comment.
+     */
+    @PatchMapping("/{id}/hold")
+    @PreAuthorize("hasAnyRole('ADMIN','ENGINEER')")
+    public ResponseEntity<TicketResponse> putOnHold(@PathVariable Long id, @Valid @RequestBody HoldRequest request) {
+        return ResponseEntity.ok(tickets.putOnHold(currentUser.get(), id, request));
+    }
+
+    /** Staff-only. Body: {"requesterId": 12}, or {"requesterId": null} for a company-level ticket. */
+    @PatchMapping("/{id}/requester")
+    @PreAuthorize("hasAnyRole('ADMIN','ENGINEER')")
+    public ResponseEntity<TicketResponse> changeRequester(@PathVariable Long id, @RequestBody Map<String, Long> body) {
+        return ResponseEntity.ok(tickets.changeRequester(currentUser.get(), id, body.get("requesterId")));
     }
 
     /** Staff-only. Re-stamps the SLA due dates from the new priority. */

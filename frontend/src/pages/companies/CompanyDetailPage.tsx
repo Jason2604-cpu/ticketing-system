@@ -11,6 +11,7 @@ import { Modal } from '../../components/ui/Modal'
 import { Avatar, CompanyMark } from '../../components/ui/Avatar'
 import { GenericBadge, PlanStatusBadge, PriorityBadge, StatusBadge } from '../../components/ui/Badge'
 import { ProgressBar, EmptyState, Alert } from '../../components/ui/Misc'
+import { PlanUsageRows } from '../../components/ui/PlanUsage'
 import { Spinner } from '../../components/ui/Spinner'
 import { useToast } from '../../components/ui/useToast'
 import { NewTicketModal } from '../tickets/NewTicketModal'
@@ -20,7 +21,7 @@ import { companiesApi } from '../../api/companies'
 import { teamApi, usersApi } from '../../api/users'
 import { ticketsApi } from '../../api/tickets'
 import { api, errorMessage } from '../../lib/api'
-import { formatBytes, formatMonthYear, formatShortDate, minutesToHuman, shortName } from '../../lib/format'
+import { formatMonthYear, formatShortDate, minutesToHuman, shortName } from '../../lib/format'
 import { useAuth } from '../../auth/useAuth'
 import type { BusinessHours, Company, CompanySubscription, CompanySubscriptionRequest, InviteTeamMemberRequest } from '../../types'
 import { Checkbox, Field, Input, Select } from '../../components/ui/Input'
@@ -110,7 +111,7 @@ export default function CompanyDetailPage() {
         <div className="mt-4 grid grid-cols-2 gap-4 md:grid-cols-5">
           <MiniStat label="Total Tickets" value={mine.length} />
           <MiniStat label="Open" value={count(['OPEN'])} className="text-blue-600" />
-          <MiniStat label="In Progress" value={count(['IN_PROGRESS'])} className="text-orange-500" />
+          <MiniStat label="In Progress" value={count(['IN_PROGRESS', 'ON_HOLD'])} className="text-orange-500" />
           <MiniStat label="Resolved" value={count(['RESOLVED', 'CLOSED'])} className="text-green-600" />
           <MiniStat label="Seats used" value={sub ? `${Math.round(seatPct)}%` : '—'} className={seatPct > 90 ? 'text-red-500' : 'text-amber-500'} />
         </div>
@@ -198,51 +199,16 @@ export default function CompanyDetailPage() {
 }
 
 /** Admin-only: pick which engineer/admin is notified whenever a new ticket comes in for this company. */
-/** Bar colour by how close a quota is to full — grey until it matters, red once it's effectively spent. */
-function usageTone(pct: number) {
-  if (pct >= 100) return '#ef4444'
-  if (pct >= 80) return '#f97316'
-  return '#4f46e5'
-}
-
-function UsageRow({ label, used, limit, pct }: { label: string; used: string; limit: string; pct: number }) {
-  return (
-    <div>
-      <div className="flex justify-between text-sm">
-        <span>{label}</span>
-        <span className="font-semibold">{used} <span className="font-normal text-muted">of {limit}</span></span>
-      </div>
-      <ProgressBar value={Math.min(100, pct)} color={usageTone(pct)} className="mt-1.5" />
-    </div>
-  )
-}
-
 /**
  * What the company has consumed against its plan's limits. Storage is the one the backend
  * enforces on upload, so it's shown first and warns before an upload starts failing.
  */
 function PlanUsageCard({ sub }: { sub: CompanySubscription }) {
-  const storageLimitBytes = sub.limits.storageLimitMb * 1024 * 1024
-  const storagePct = storageLimitBytes > 0 ? (sub.usage.storageUsedBytes / storageLimitBytes) * 100 : 0
-  const ticketPct = sub.limits.monthlyTicketLimit > 0 ? (sub.usage.ticketsThisMonth / sub.limits.monthlyTicketLimit) * 100 : 0
-  const seatPct = sub.limits.maxUsers > 0 ? (sub.usage.activeUsers / sub.limits.maxUsers) * 100 : 0
-
   return (
     <Card>
       <CardHeader title="Plan Usage" action={<span className="text-sm text-muted">{sub.subscriptionType === 'CUSTOM' ? 'Custom Plan' : sub.planName ?? 'No plan'}</span>} />
-      <CardBody className="space-y-3">
-        <UsageRow
-          label="Storage"
-          used={formatBytes(sub.usage.storageUsedBytes)}
-          limit={sub.limits.storageLimitMb >= 1024 ? `${Math.round(sub.limits.storageLimitMb / 1024)} GB` : `${sub.limits.storageLimitMb} MB`}
-          pct={storagePct}
-        />
-        <UsageRow label="Tickets this month" used={String(sub.usage.ticketsThisMonth)} limit={String(sub.limits.monthlyTicketLimit)} pct={ticketPct} />
-        <UsageRow label="Seats" used={String(sub.usage.activeUsers)} limit={String(sub.limits.maxUsers)} pct={seatPct} />
-
-        {storagePct >= 100 && <Alert tone="error">Storage is full — new attachments and logo uploads are being rejected.</Alert>}
-        {storagePct >= 80 && storagePct < 100 && <Alert tone="warning">Storage is {Math.round(storagePct)}% used.</Alert>}
-        {ticketPct >= 100 && <Alert tone="error">The monthly ticket limit is reached — new tickets are being rejected until next month.</Alert>}
+      <CardBody>
+        <PlanUsageRows sub={sub} />
       </CardBody>
     </Card>
   )

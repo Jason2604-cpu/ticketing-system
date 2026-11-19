@@ -12,7 +12,7 @@ import { chartTheme, tooltipStyle } from '../../lib/chartTheme'
 
 const SLA_TARGET = 90
 const STATUS_COLORS: Record<string, string> = {
-  OPEN: '#3b82f6', IN_PROGRESS: '#f97316', RESOLVED: '#22c55e', CLOSED: '#9ca3af',
+  OPEN: '#3b82f6', IN_PROGRESS: '#f97316', ON_HOLD: '#a855f7', RESOLVED: '#22c55e', CLOSED: '#9ca3af',
 }
 /** Widened to string keys: the API sends priority codes as plain strings. */
 const PRIORITY_DOTS: Record<string, string> = Object.fromEntries(

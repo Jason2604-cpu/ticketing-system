@@ -15,7 +15,7 @@ import { formatShortDate, shortName, timeAgo } from '../../lib/format'
 import type { TicketStatus } from '../../types'
 
 const TABS: { key: TicketStatus | ''; label: string }[] = [
-  { key: '', label: 'All' }, { key: 'OPEN', label: 'Open' }, { key: 'IN_PROGRESS', label: 'In Progress' }, { key: 'RESOLVED', label: 'Resolved' }, { key: 'CLOSED', label: 'Closed' },
+  { key: '', label: 'All' }, { key: 'OPEN', label: 'Open' }, { key: 'IN_PROGRESS', label: 'In Progress' }, { key: 'ON_HOLD', label: 'On Hold' }, { key: 'RESOLVED', label: 'Resolved' }, { key: 'CLOSED', label: 'Closed' },
 ]
 
 export default function ClientTicketsPage() {
@@ -56,7 +56,8 @@ export default function ClientTicketsPage() {
             <Link key={t.id} to={`/tickets/${t.id}`} className="block px-5 py-4 hover:bg-gray-50">
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2"><PriorityBadge priority={t.priority} /><StatusBadge status={t.status} />{hasSla && <SlaBadge state={t.resolutionSla} quiet />}</div>
+                  <div className="flex items-center gap-2"><PriorityBadge priority={t.priority} /><StatusBadge status={t.status} />{hasSla && <SlaBadge state={t.resolutionSla} quiet />}
+                    {t.status === 'ON_HOLD' && t.holdReasonLabel && <span className="text-xs text-purple-700">{t.holdReasonLabel}</span>}</div>
                   <p className="mt-2 font-medium">{t.title}</p>
                   <div className="mt-1.5 flex flex-wrap items-center gap-4 text-sm text-muted">
                     <span className="flex items-center gap-1"><UserIcon size={13} /> {t.assignee ? shortName(t.assignee.firstName, t.assignee.lastName) : 'Unassigned'}</span>

@@ -45,9 +45,19 @@ public class Ticket {
     @JoinColumn(name = "company_id", nullable = false)
     private Company company;
 
+    /** Who typed the ticket in. Set once; never changes (it is the audit record). */
     @ManyToOne(optional = false)
     @JoinColumn(name = "created_by", nullable = false)
     private User createdBy;
+
+    /**
+     * Who the ticket is FOR — the customer its notifications and emails go to. A customer's own
+     * ticket: themselves. Staff pick it when raising a ticket on a company's behalf and can change
+     * it later. Null = a company-level ticket, whose customer notices go to the Customer Admins.
+     */
+    @ManyToOne
+    @JoinColumn(name = "requester_id")
+    private User requester;
 
     @ManyToOne
     @JoinColumn(name = "assignee_id")
@@ -66,6 +76,18 @@ public class Ticket {
     @Column(name = "resolution_breached_at") private LocalDateTime resolutionBreachedAt;
     @Column(name = "resolved_at") private LocalDateTime resolvedAt;
     @Column(name = "closed_at") private LocalDateTime closedAt;
+
+    // ON_HOLD (V11). All four are cleared/updated together by TicketService when a hold ends.
+    @Enumerated(EnumType.STRING)
+    @Column(name = "hold_reason", length = 30)
+    private HoldReason holdReason;
+    /** Optional date shown on the ticket (e.g. the booked visit). Display only for now. */
+    @Column(name = "hold_until") private LocalDateTime holdUntil;
+    /** When the current hold started — the moment the resolution clock stopped. Null when not on hold. */
+    @Column(name = "sla_paused_at") private LocalDateTime slaPausedAt;
+    /** Working minutes spent on hold during the current SLA clock (reset on reopen). */
+    @Column(name = "sla_paused_minutes", nullable = false)
+    private long slaPausedMinutes = 0;
 
     @Column(name = "created_at", updatable = false, nullable = false)
     private LocalDateTime createdAt;
@@ -95,6 +117,8 @@ public class Ticket {
     public void setCompany(Company company) { this.company = company; }
     public User getCreatedBy() { return createdBy; }
     public void setCreatedBy(User createdBy) { this.createdBy = createdBy; }
+    public User getRequester() { return requester; }
+    public void setRequester(User requester) { this.requester = requester; }
     public User getAssignee() { return assignee; }
     public void setAssignee(User assignee) { this.assignee = assignee; }
     public LocalDateTime getResponseDueAt() { return responseDueAt; }
@@ -113,6 +137,14 @@ public class Ticket {
     public void setResolvedAt(LocalDateTime v) { this.resolvedAt = v; }
     public LocalDateTime getClosedAt() { return closedAt; }
     public void setClosedAt(LocalDateTime v) { this.closedAt = v; }
+    public HoldReason getHoldReason() { return holdReason; }
+    public void setHoldReason(HoldReason v) { this.holdReason = v; }
+    public LocalDateTime getHoldUntil() { return holdUntil; }
+    public void setHoldUntil(LocalDateTime v) { this.holdUntil = v; }
+    public LocalDateTime getSlaPausedAt() { return slaPausedAt; }
+    public void setSlaPausedAt(LocalDateTime v) { this.slaPausedAt = v; }
+    public long getSlaPausedMinutes() { return slaPausedMinutes; }
+    public void setSlaPausedMinutes(long v) { this.slaPausedMinutes = v; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }
 }

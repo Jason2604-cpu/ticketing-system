@@ -49,6 +49,7 @@ export default function DashboardPage() {
       thisWeek: tickets.filter((t) => new Date(t.createdAt).getTime() > weekAgo).length,
       open: tickets.filter((t) => t.status === 'OPEN').length,
       inProgress: tickets.filter((t) => t.status === 'IN_PROGRESS').length,
+      onHold: tickets.filter((t) => t.status === 'ON_HOLD').length,
       resolved30: tickets.filter((t) => t.resolvedAt && new Date(t.resolvedAt).getTime() > monthAgo).length,
       critical: tickets.filter((t) => t.priority === 'CRITICAL' && (t.status === 'OPEN' || t.status === 'IN_PROGRESS')).length,
     }
@@ -58,15 +59,16 @@ export default function DashboardPage() {
   const maxPriority = Math.max(1, ...byPriority.map((b) => b.value))
 
   const byCompany = useMemo(() => {
-    const map = new Map<string, { open: number; inProgress: number; done: number }>()
+    const map = new Map<string, { open: number; inProgress: number; onHold: number; done: number }>()
     for (const t of tickets) {
-      const row = map.get(t.companyName) ?? { open: 0, inProgress: 0, done: 0 }
+      const row = map.get(t.companyName) ?? { open: 0, inProgress: 0, onHold: 0, done: 0 }
       if (t.status === 'OPEN') row.open++
       else if (t.status === 'IN_PROGRESS') row.inProgress++
+      else if (t.status === 'ON_HOLD') row.onHold++
       else row.done++
       map.set(t.companyName, row)
     }
-    return [...map.entries()].map(([name, v]) => ({ name, ...v, total: v.open + v.inProgress + v.done })).sort((a, b) => b.total - a.total)
+    return [...map.entries()].map(([name, v]) => ({ name, ...v, total: v.open + v.inProgress + v.onHold + v.done })).sort((a, b) => b.total - a.total)
   }, [tickets])
 
   const workload = useMemo(() => {
@@ -81,9 +83,11 @@ export default function DashboardPage() {
   }, [tickets])
   const maxLoad = Math.max(1, ...workload.map((w) => w.active))
 
-  // Tickets a customer is still waiting on: active, and no engineer has publicly replied yet.
+  // Tickets a customer is still waiting on: unfinished, and no engineer has publicly replied yet.
+  // ON_HOLD counts — a hold pauses the resolution clock, not the first-response one. Same rule as
+  // the backend's ?awaitingResponse=true filter, which is what "View" opens.
   const waiting = useMemo(() => {
-    const pending = tickets.filter((t) => (t.status === 'OPEN' || t.status === 'IN_PROGRESS') && !t.firstResponseAt)
+    const pending = tickets.filter((t) => (t.status === 'OPEN' || t.status === 'IN_PROGRESS' || t.status === 'ON_HOLD') && !t.firstResponseAt)
     return {
       total: pending.length,
       mine: pending.filter((t) => t.assignee?.id === user?.id).length,
@@ -101,7 +105,7 @@ export default function DashboardPage() {
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
           <StatCard label="Total Tickets" value={stats.total} icon={<Ticket size={18} />} tone="brand" sub={<span className="inline-flex items-center gap-1"><ArrowUpRight size={14} className="text-green-600" /> +{stats.thisWeek} this week</span>} />
           <StatCard label="Open" value={stats.open} icon={<AlertCircle size={18} />} tone="blue" sub={<span className="inline-flex items-center gap-1"><ArrowUpRight size={14} className="text-green-600" /> Needs attention</span>} />
-          <StatCard label="In Progress" value={stats.inProgress} icon={<Loader size={18} />} tone="orange" sub="Being worked on" />
+          <StatCard label="In Progress" value={stats.inProgress} icon={<Loader size={18} />} tone="orange" sub={stats.onHold > 0 ? `Being worked on · ${stats.onHold} on hold` : 'Being worked on'} />
           <StatCard label="Resolved (30d)" value={stats.resolved30} icon={<CheckCircle2 size={18} />} tone="green" sub={<span className="inline-flex items-center gap-1"><TrendingUp size={14} className="text-green-600" /> vs last month</span>} />
         </div>
 
@@ -116,11 +120,12 @@ export default function DashboardPage() {
           <div className="mt-4 flex items-center justify-between rounded-xl border border-blue-200 bg-blue-50 px-5 py-3.5">
             <p className="flex items-center gap-2 text-blue-700"><Info size={18} /><span>
               <b>{waiting.total} ticket{waiting.total > 1 ? 's' : ''}</b> waiting for a first response
-              {(waiting.mine > 0 || waiting.unassigned > 0) && (
-                <> — {[waiting.mine > 0 ? `${waiting.mine} assigned to you` : null, waiting.unassigned > 0 ? `${waiting.unassigned} unassigned` : null].filter(Boolean).join(', ')}</>
-              )}.
+              {waiting.mine > 0 && (
+                <> — <Link to={`/tickets?awaiting=first-response&assigneeId=${user?.id}`} className="underline-offset-2 hover:underline">{waiting.mine} assigned to you</Link></>
+              )}
+              {waiting.unassigned > 0 && <>{waiting.mine > 0 ? ', ' : ' — '}{waiting.unassigned} unassigned</>}.
             </span></p>
-            <Link to="/tickets?status=OPEN" className="text-sm font-medium text-blue-700 hover:underline">View →</Link>
+            <Link to="/tickets?awaiting=first-response" className="text-sm font-medium text-blue-700 hover:underline">View →</Link>
           </div>
         )}
 
@@ -191,6 +196,7 @@ export default function DashboardPage() {
                   <div className="mt-2 flex h-1.5 gap-1">
                     {c.open > 0 && <div className="rounded-full bg-blue-500" style={{ flex: c.open }} />}
                     {c.inProgress > 0 && <div className="rounded-full bg-orange-500" style={{ flex: c.inProgress }} />}
+                    {c.onHold > 0 && <div className="rounded-full bg-purple-500" style={{ flex: c.onHold }} title={`${c.onHold} on hold`} />}
                     {c.done > 0 && <div className="rounded-full bg-green-500" style={{ flex: c.done }} />}
                   </div>
                 </div>

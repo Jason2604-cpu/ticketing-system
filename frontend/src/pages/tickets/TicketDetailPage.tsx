@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ArrowLeft, BookOpen, Building2, Clock, FileText, Lock, Paperclip, Send, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, BookOpen, Building2, CirclePause, Clock, FileText, Lock, Paperclip, Send, Trash2 } from 'lucide-react'
 import { Topbar } from '../../components/layout/Topbar'
 import { Page } from '../../components/layout/AppShell'
 import { Card, CardBody, CardHeader } from '../../components/ui/Card'
@@ -15,6 +15,9 @@ import { Spinner } from '../../components/ui/Spinner'
 import { Alert } from '../../components/ui/Misc'
 import { useToast } from '../../components/ui/useToast'
 import { ticketsApi } from '../../api/tickets'
+import { teamApi } from '../../api/users'
+import { HoldModal } from './HoldModal'
+import { holdReasonLabel } from './ticketOptions'
 import { useAuth } from '../../auth/useAuth'
 import { api, errorMessage } from '../../lib/api'
 import { cn } from '../../lib/cn'
@@ -26,10 +29,11 @@ import { RelatedArticlesCard } from '../kb/RelatedArticlesCard'
 import { ArticlePickerModal } from '../kb/ArticlePickerModal'
 import type { TicketPriority, TicketStatus } from '../../types'
 
-const STATUS_OPTS = [{ value: 'OPEN', label: 'Open' }, { value: 'IN_PROGRESS', label: 'In Progress' }, { value: 'RESOLVED', label: 'Resolved' }, { value: 'CLOSED', label: 'Closed' }] as const
+const STATUS_OPTS = [{ value: 'OPEN', label: 'Open' }, { value: 'IN_PROGRESS', label: 'In Progress' }, { value: 'ON_HOLD', label: 'On Hold' }, { value: 'RESOLVED', label: 'Resolved' }, { value: 'CLOSED', label: 'Closed' }] as const
 
 const fmtBytes = (n: number) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`)
 const overdue = (iso?: string, done?: string) => !!iso && !done && new Date(iso).getTime() < Date.now()
+const dateTime = (iso: string) => `${formatShortDate(iso)} ${new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
 
 export default function TicketDetailPage() {
   const { id } = useParams()
@@ -43,17 +47,22 @@ export default function TicketDetailPage() {
   const [comment, setComment] = useState('')
   const [internal, setInternal] = useState(false)
   const [articlePicker, setArticlePicker] = useState(false)
+  const [holdOpen, setHoldOpen] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
 
   // Poll while this page is open so new comments/status changes from the other side show up
   // without the user having to refresh. Pauses when the tab isn't visible (default react-query behaviour).
   const ticket = useQuery({ queryKey: ['tickets', ticketId], queryFn: () => ticketsApi.get(ticketId), refetchInterval: 10_000 })
   const assignees = useQuery({ queryKey: ['tickets', 'assignees'], queryFn: ticketsApi.assignees, enabled: isStaff })
+  // The ticket's company people, for the Requester picker (staff only).
+  const ticketCompanyId = ticket.data?.companyId
+  const members = useQuery({ queryKey: ['team', ticketCompanyId], queryFn: () => teamApi.members(Number(ticketCompanyId)), enabled: isStaff && !!ticketCompanyId })
   const invalidate = () => { void qc.invalidateQueries({ queryKey: ['tickets'] }) }
   const onErr = (e: unknown) => toast(errorMessage(e), 'error')
 
   const setStatus = useMutation({ mutationFn: (s: TicketStatus) => ticketsApi.setStatus(ticketId, s), onSuccess: invalidate, onError: onErr })
   const assign = useMutation({ mutationFn: (uid: number | null) => ticketsApi.assign(ticketId, uid), onSuccess: invalidate, onError: onErr })
+  const setRequester = useMutation({ mutationFn: (rid: number | null) => ticketsApi.setRequester(ticketId, rid), onSuccess: () => { invalidate(); toast('Requester updated') }, onError: onErr })
   const setPriority = useMutation({ mutationFn: (p: TicketPriority) => ticketsApi.setPriority(ticketId, p), onSuccess: () => { invalidate(); toast('Priority updated — SLA targets recalculated') }, onError: onErr })
   const addComment = useMutation({ mutationFn: () => ticketsApi.addComment(ticketId, comment, internal), onSuccess: () => { setComment(''); setInternal(false); invalidate() }, onError: onErr })
   const attach = useMutation({ mutationFn: (f: File) => ticketsApi.attach(ticketId, f), onSuccess: () => { invalidate(); toast('Attachment added') }, onError: onErr })
@@ -69,8 +78,23 @@ export default function TicketDetailPage() {
   const reopenLocked = (t.status === 'RESOLVED' || t.status === 'CLOSED') && !!terminalAt
     && Date.now() - new Date(terminalAt).getTime() > 7 * 24 * 60 * 60 * 1000
 
+  // Only an open or in-progress ticket can be put on hold.
+  const canHold = t.status === 'OPEN' || t.status === 'IN_PROGRESS' || t.status === 'ON_HOLD'
+  const paused = t.resolutionSla === 'PAUSED'
+  // Requester: active customer accounts of the ticket's company. A requester who has since been
+  // deactivated is kept in the list so the picker can still show who it is.
+  const requesterOpts = [
+    { value: 0, label: '— None (company-level) —', description: "The company's admins get the updates" },
+    ...(members.data ?? [])
+      .filter((u) => u.status === 'ACTIVE' && (u.role === 'CUSTOMER' || u.role === 'CUSTOMER_ADMIN'))
+      .map((u) => ({ value: u.id, label: `${u.firstName} ${u.lastName}`, description: u.email })),
+  ]
+  if (t.requester && !requesterOpts.some((o) => o.value === t.requester?.id)) {
+    requesterOpts.push({ value: t.requester.id, label: `${t.requester.firstName} ${t.requester.lastName}`, description: 'No longer active' })
+  }
+
   // Customers only get the transitions the backend allows.
-  const statusOptions = (isStaff ? [...STATUS_OPTS] : STATUS_OPTS.filter((o) =>
+  const statusOptions = (isStaff ? STATUS_OPTS.filter((o) => o.value !== 'ON_HOLD' || canHold) : STATUS_OPTS.filter((o) =>
     (t.status === 'RESOLVED' && (o.value === 'CLOSED' || o.value === 'OPEN')) || (t.status === 'CLOSED' && o.value === 'OPEN') || o.value === t.status))
     .filter((o) => !(reopenLocked && o.value === 'OPEN'))
 
@@ -177,8 +201,17 @@ export default function TicketDetailPage() {
               <CardBody className="space-y-4 text-sm">
                 <div>
                   <p className="text-xs uppercase tracking-wide text-muted">Status</p>
-                  <SelectMenu className="mt-1" value={t.status} onChange={(s) => setStatus.mutate(s)} options={statusOptions} disabled={statusOptions.length <= 1} />
+                  {/* On Hold needs a reason, so it opens a dialog instead of changing the status directly. */}
+                  <SelectMenu className="mt-1" value={t.status} onChange={(s) => (s === 'ON_HOLD' ? setHoldOpen(true) : setStatus.mutate(s))} options={statusOptions} disabled={statusOptions.length <= 1} />
                   {reopenLocked && <p className="mt-1.5 text-xs text-muted">Was {t.status === 'CLOSED' ? 'closed' : 'resolved'} more than 7 days ago — it can no longer be reopened.</p>}
+                  {t.status === 'ON_HOLD' && (
+                    <div className="mt-2 rounded-lg bg-purple-100 px-3 py-2 text-xs text-purple-700">
+                      <p className="flex items-center gap-1.5 font-medium"><CirclePause size={13} /> {t.holdReasonLabel ?? holdReasonLabel(t.holdReason)}</p>
+                      <p className="mt-0.5">{t.slaPausedAt && <>Put on hold {timeAgo(t.slaPausedAt)}</>}{t.holdUntil && <> · until {dateTime(t.holdUntil)}</>}</p>
+                      {t.holdReason === 'CUSTOMER_REPLY' && <p className="mt-0.5">{isStaff ? 'Resumes by itself when the customer replies.' : 'Reply below and work picks up again straight away.'}</p>}
+                      {isStaff && t.holdReason !== 'CUSTOMER_REPLY' && <p className="mt-0.5">Change the status to resume it.</p>}
+                    </div>
+                  )}
                 </div>
                 {isStaff && (
                   <div>
@@ -188,6 +221,17 @@ export default function TicketDetailPage() {
                     <p className="mt-1.5 text-xs text-muted">Changing this re-stamps the SLA deadlines.</p>
                   </div>
                 )}
+                <div>
+                  <p className="text-xs uppercase tracking-wide text-muted">Requester</p>
+                  {isStaff ? (
+                    <SelectMenu<number> className="mt-1" value={t.requester?.id ?? 0} onChange={(v) => setRequester.mutate(v === 0 ? null : v)} options={requesterOpts} disabled={closed} />
+                  ) : (
+                    <p className="mt-1 flex items-center gap-2">
+                      {t.requester ? <><Avatar size="sm" firstName={t.requester.firstName} lastName={t.requester.lastName} src={api.mediaUrl(t.requester.photoUrl)} /> {t.requester.firstName} {t.requester.lastName}</> : <span className="italic text-gray-400">Company-level ticket</span>}
+                    </p>
+                  )}
+                  {t.requester?.id !== t.createdBy.id && <p className="mt-1.5 text-xs text-muted">Logged by {t.createdBy.firstName} {t.createdBy.lastName}</p>}
+                </div>
                 <div>
                   <p className="text-xs uppercase tracking-wide text-muted">Assignee</p>
                   {isStaff ? (
@@ -209,10 +253,17 @@ export default function TicketDetailPage() {
                       {overdue(t.responseDueAt, t.firstResponseAt) ? <AlertTriangle size={14} /> : <Clock size={14} className="text-muted" />}
                       First response {t.firstResponseAt ? `✓ ${timeAgo(t.firstResponseAt)}` : t.responseDueAt ? `due ${formatShortDate(t.responseDueAt)} ${new Date(t.responseDueAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '—'}
                     </li>
-                    <li className={cn('flex items-center gap-2', overdue(t.resolutionDueAt, t.resolvedAt) && 'text-red-600')}>
-                      {overdue(t.resolutionDueAt, t.resolvedAt) ? <AlertTriangle size={14} /> : <Clock size={14} className="text-muted" />}
-                      Resolution {t.resolvedAt ? `✓ ${formatShortDate(t.resolvedAt)}` : t.resolutionDueAt ? `due ${formatShortDate(t.resolutionDueAt)}` : '—'}
-                    </li>
+                    {paused ? (
+                      // The deadline isn't overdue while paused — it moves out by the paused time on resume.
+                      <li className="flex items-center gap-2 text-purple-700" title={t.resolutionDueAt ? `Was due ${dateTime(t.resolutionDueAt)} — moves out by the paused time when work resumes` : undefined}>
+                        <CirclePause size={14} /> Resolution paused{t.slaPausedAt ? ` ${timeAgo(t.slaPausedAt)}` : ''}
+                      </li>
+                    ) : (
+                      <li className={cn('flex items-center gap-2', overdue(t.resolutionDueAt, t.resolvedAt) && 'text-red-600')}>
+                        {overdue(t.resolutionDueAt, t.resolvedAt) ? <AlertTriangle size={14} /> : <Clock size={14} className="text-muted" />}
+                        Resolution {t.resolvedAt ? `✓ ${formatShortDate(t.resolvedAt)}` : t.resolutionDueAt ? `due ${formatShortDate(t.resolutionDueAt)}` : '—'}
+                      </li>
+                    )}
                   </ul>
                 </div>
                 )}
@@ -230,6 +281,7 @@ export default function TicketDetailPage() {
           </div>
         </div>
       </Page>
+      {isStaff && <HoldModal ticketId={t.id} open={holdOpen} onClose={() => setHoldOpen(false)} />}
       {articlePicker && (
         <ArticlePickerModal ticketId={t.id} companyId={t.companyId} internal={internal}
           onInsert={(line) => setComment((prev) => (prev.trim() ? `${prev.trimEnd()}\n\n${line}` : line))}

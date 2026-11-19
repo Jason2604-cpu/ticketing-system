@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { AlertCircle, BarChart3, CheckCircle2, ChevronRight, Loader, MessageSquare, Plus, RefreshCw, UserCheck } from 'lucide-react'
+import { AlertCircle, BarChart3, CheckCircle2, ChevronRight, CirclePause, Loader, MessageSquare, Plus, RefreshCw, UserCheck } from 'lucide-react'
 import { Topbar } from '../../components/layout/Topbar'
 import { Page } from '../../components/layout/AppShell'
 import { StatCard } from '../../components/ui/StatCard'
@@ -17,12 +17,14 @@ export default function ClientOverviewPage() {
   const tickets = all.filter((t) => t.companyId === user?.companyId)
 
   const open = tickets.filter((t) => t.status === 'OPEN').length
-  const inProgress = tickets.filter((t) => t.status === 'IN_PROGRESS').length
+  const inProgress = tickets.filter((t) => t.status === 'IN_PROGRESS' || t.status === 'ON_HOLD').length
+  const onHold = tickets.filter((t) => t.status === 'ON_HOLD').length
   const done = tickets.filter((t) => t.status === 'RESOLVED' || t.status === 'CLOSED').length
 
   // Activity feed derived from ticket state (real events arrive with the ticket backend).
   const feed = tickets.slice(0, 4).map((t) => {
     if (t.status === 'RESOLVED' || t.status === 'CLOSED') return { id: t.id, icon: <CheckCircle2 size={14} />, tone: 'bg-green-100 text-green-600', text: `Ticket #${t.id} was marked as ${t.status === 'CLOSED' ? 'Closed' : 'Resolved'}`, at: t.updatedAt }
+    if (t.status === 'ON_HOLD') return { id: t.id, icon: <CirclePause size={14} />, tone: 'bg-purple-100 text-purple-700', text: `Ticket #${t.id} is on hold — ${t.holdReasonLabel ?? 'waiting'}`, at: t.slaPausedAt ?? t.updatedAt }
     if (t.assignee) return { id: t.id, icon: <UserCheck size={14} />, tone: 'bg-blue-100 text-blue-600', text: `Your ticket was assigned to ${t.assignee.firstName} ${t.assignee.lastName}`, at: t.updatedAt }
     return { id: t.id, icon: <MessageSquare size={14} />, tone: 'bg-brand-100 text-brand-600', text: `Ticket #${t.id} is waiting for an engineer`, at: t.createdAt }
   })
@@ -33,7 +35,7 @@ export default function ClientOverviewPage() {
       <Page>
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
           <StatCard label="Open Tickets" value={open} icon={<AlertCircle size={18} />} tone="blue" sub="Awaiting response" />
-          <StatCard label="In Progress" value={inProgress} icon={<Loader size={18} />} tone="orange" sub="Being worked on" />
+          <StatCard label="In Progress" value={inProgress} icon={<Loader size={18} />} tone="orange" sub={onHold > 0 ? `Being worked on · ${onHold} on hold` : 'Being worked on'} />
           <StatCard label="Resolved / Closed" value={done} icon={<CheckCircle2 size={18} />} tone="green" sub="This month" />
         </div>
 

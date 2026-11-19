@@ -4,6 +4,7 @@ import com.konohahelpdesk.config.AppProperties;
 import com.konohahelpdesk.dto.subscription.SlaDto;
 import com.konohahelpdesk.dto.ticket.CommentRequest;
 import com.konohahelpdesk.dto.ticket.CreateTicketRequest;
+import com.konohahelpdesk.dto.ticket.HoldRequest;
 import com.konohahelpdesk.dto.ticket.TicketResponse;
 import com.konohahelpdesk.dto.user.UserResponse;
 import com.konohahelpdesk.exception.BusinessRuleException;
@@ -14,6 +15,7 @@ import com.konohahelpdesk.model.company.Company;
 import com.konohahelpdesk.model.media.MediaFile;
 import com.konohahelpdesk.model.media.MediaKind;
 import com.konohahelpdesk.model.notification.NotificationType;
+import com.konohahelpdesk.model.ticket.HoldReason;
 import com.konohahelpdesk.model.ticket.Ticket;
 import com.konohahelpdesk.model.ticket.TicketCategory;
 import com.konohahelpdesk.model.ticket.TicketComment;
@@ -53,7 +55,8 @@ import java.util.stream.Stream;
  * Ticket lifecycle. Every public method takes the acting user and enforces:
  *  - customers only see / act on their own company's tickets
  *  - internal notes never reach customers
- *  - status transitions follow OPEN → IN_PROGRESS → RESOLVED → CLOSED (customers may only close a resolved ticket or reopen it)
+ *  - status transitions follow OPEN → IN_PROGRESS → RESOLVED → CLOSED (customers may only close a resolved ticket or reopen it);
+ *    staff can park an open ticket ON_HOLD with a reason (putOnHold), which pauses the resolution SLA
  *  - the company's TICKET_MANAGEMENT feature and monthly ticket quota are enforced on creation
  *  - SLA due dates are stamped from the company's subscription at creation
  */
@@ -110,8 +113,14 @@ public class TicketService {
 
     // ── Read ─────────────────────────────────────────────────────────────────
 
+    /**
+     * @param awaitingResponse true = only tickets still waiting for a first public staff reply
+     *                         (OPEN / IN_PROGRESS / ON_HOLD with no first response) — the
+     *                         dashboard banner's definition, so its "View" link lists exactly what it counted.
+     */
     @Transactional(readOnly = true)
-    public List<TicketResponse> list(User actor, Long companyId, TicketStatus status, TicketPriority priority, Long assigneeId, String q) {
+    public List<TicketResponse> list(User actor, Long companyId, TicketStatus status, TicketPriority priority, Long assigneeId, String q,
+                                     Boolean awaitingResponse) {
         // A customer account with no company has no tickets to see (and used to be a 500 here).
         if (!isStaff(actor) && actor.getCompany() == null) return List.of();
         Long scopedCompany = isStaff(actor) ? companyId : actor.getCompany().getId();
@@ -124,6 +133,7 @@ public class TicketService {
             if (cq != null && cq.getResultType() == Ticket.class) {
                 root.fetch("company", jakarta.persistence.criteria.JoinType.INNER);
                 root.fetch("createdBy", jakarta.persistence.criteria.JoinType.INNER);
+                root.fetch("requester", jakarta.persistence.criteria.JoinType.LEFT);
                 root.fetch("assignee", jakarta.persistence.criteria.JoinType.LEFT);
             }
             var predicates = new java.util.ArrayList<jakarta.persistence.criteria.Predicate>();
@@ -137,6 +147,11 @@ public class TicketService {
             if (status != null) predicates.add(cb.equal(root.get("status"), status));
             if (priority != null) predicates.add(cb.equal(root.get("priority"), priority));
             if (assigneeId != null) predicates.add(cb.equal(root.get("assignee").get("id"), assigneeId));
+            if (Boolean.TRUE.equals(awaitingResponse)) {
+                // A hold doesn't pause the first-response clock, so ON_HOLD tickets count here too.
+                predicates.add(cb.isNull(root.get("firstResponseAt")));
+                predicates.add(root.get("status").in(TicketStatus.OPEN, TicketStatus.IN_PROGRESS, TicketStatus.ON_HOLD));
+            }
             if (query != null) {
                 var byTitle = cb.like(cb.lower(root.get("title")), "%" + query + "%");
                 predicates.add(query.matches("\\d+") ? cb.or(byTitle, cb.equal(root.get("id"), Long.parseLong(query))) : byTitle);
@@ -230,6 +245,13 @@ public class TicketService {
             throw e;
         }
 
+        // Who the ticket is for. A customer is always their own requester; staff may pick an active
+        // user of the company, or leave it empty for a company-level ticket.
+        User requester = isStaff(actor)
+            ? (req.getRequesterId() == null ? null : requesterFor(company, req.getRequesterId()))
+            : actor;
+        boolean onBehalf = requester != null && !requester.getId().equals(actor.getId());
+
         Ticket t = new Ticket();
         t.setTitle(req.getTitle().trim());
         t.setDescription(req.getDescription().trim());
@@ -238,11 +260,13 @@ public class TicketService {
         t.setPriority(req.getPriority());
         t.setCompany(company);
         t.setCreatedBy(actor);
+        t.setRequester(requester);
         startSlaClock(t);
         Ticket saved = tickets.save(t);
 
-        system(saved, "Ticket created by " + actor.getFirstName() + " " + actor.getLastName() + ".");
-        audit.event("TICKET_CREATED", "#" + saved.getId() + " · " + company.getName() + " · " + saved.getPriority());
+        system(saved, "Ticket created by " + fullName(actor) + (onBehalf ? " on behalf of " + fullName(requester) : "") + ".");
+        audit.event("TICKET_CREATED", "#" + saved.getId() + " · " + company.getName() + " · " + saved.getPriority()
+            + (onBehalf ? " · for " + AuditLogger.describe(requester) : ""));
 
         User mainEngineer = activeOrNull(company.getMainEngineer());
         if (mainEngineer != null) {
@@ -258,21 +282,30 @@ public class TicketService {
                 + "Priority: " + label(saved.getPriority()) + "\n"
                 + "Category: " + saved.getCategory() + "\n"
                 + "Raised by: " + actor.getFirstName() + " " + actor.getLastName() + "\n"
+                + (onBehalf ? "On behalf of: " + fullName(requester) + "\n" : "")
                 + due("First response due", saved.getResponseDueAt())
                 + due("Resolution due", saved.getResolutionDueAt())
                 + "\n" + saved.getDescription() + "\n\n"
                 + "Open the ticket here:\n" + mail.ticketLink(saved.getId()) + "\n");
         }
 
-        // Only when the customer submitted it themselves — a staff member creating one on a
-        // company's behalf isn't the customer confirming their own action.
-        if (!isStaff(actor)) {
+        if (requester != null && !onBehalf) {
+            // The customer submitted it themselves: confirm their own action.
             mail.send(actor.getEmail(),
                 "Ticket #" + saved.getId() + " created — " + mail.appName(),
                 "Hi " + actor.getFirstName() + ",\n\n"
                 + "Your ticket has been created successfully:\n\n"
                 + "#" + saved.getId() + " — " + saved.getTitle() + "\n\n"
                 + "You can track its progress here:\n" + mail.ticketLink(saved.getId()) + "\n\n"
+                + "We'll notify you as soon as there's an update.\n");
+        } else if (onBehalf) {
+            // Staff raised it for them: tell them it exists, in their name, and where to follow it.
+            mailUnlessSelf(requester, actor, true,
+                "Ticket #" + saved.getId() + " raised for you — " + mail.appName(),
+                "Hi " + requester.getFirstName() + ",\n\n"
+                + fullName(actor) + " has raised a support ticket for you:\n\n"
+                + "#" + saved.getId() + " — " + saved.getTitle() + "\n\n"
+                + "You can follow its progress and reply here:\n" + mail.ticketLink(saved.getId()) + "\n\n"
                 + "We'll notify you as soon as there's an update.\n");
         }
         return get(actor, saved.getId());
@@ -377,6 +410,10 @@ public class TicketService {
             boolean reopen = (cur == TicketStatus.RESOLVED || cur == TicketStatus.CLOSED) && next == TicketStatus.OPEN;
             if (!close && !reopen) throw new AccessDeniedException("Customers can only close a resolved ticket or reopen it");
         }
+        // A hold needs a reason and pauses the SLA, so it has its own operation.
+        if (next == TicketStatus.ON_HOLD) {
+            throw new BusinessRuleException("Putting a ticket on hold needs a reason — use PATCH /api/tickets/" + id + "/hold");
+        }
         if (cur == TicketStatus.CLOSED && next != TicketStatus.OPEN) {
             throw new BusinessRuleException("A closed ticket can only be reopened");
         }
@@ -391,6 +428,11 @@ public class TicketService {
                     + " more than 7 days ago and can no longer be reopened");
             }
         }
+
+        // Leaving a hold (to any status, Resolved included): give the resolution clock back the
+        // working time it spent paused BEFORE the new status is judged against it.
+        boolean leavingHold = cur == TicketStatus.ON_HOLD;
+        long shiftedMinutes = leavingHold ? releaseHold(t, LocalDateTime.now()) : 0;
 
         t.setStatus(next);
         if (next == TicketStatus.RESOLVED) t.setResolvedAt(LocalDateTime.now());
@@ -410,21 +452,124 @@ public class TicketService {
             t.setResponseBreachedAt(null);
             t.setResolutionBreachedAt(null);
             t.setFirstResponseAt(null);
+            // Hold time belongs to the clock it paused; a new clock starts with none.
+            t.setSlaPausedMinutes(0);
             startSlaClock(t);
         }
         tickets.save(t);
 
         system(t, actor.getFirstName() + " changed status from " + label(cur) + " to " + label(next) + ".");
+        if (leavingHold) system(t, holdEndedNote(shiftedMinutes));
         if (reopening) system(t, "Reopened — SLA deadlines restarted from now.");
         audit.event("TICKET_STATUS", "#" + id + " · " + cur + " -> " + next
             + (reopening ? " · SLA restarted" : ""));
+        if (leavingHold) audit.event("TICKET_RESUMED", "#" + id + " · -> " + next + " · resolution deadline +" + shiftedMinutes + "m");
 
         if (next == TicketStatus.RESOLVED) {
-            notifications.notifyUnlessSelf(t.getCreatedBy(), actor, NotificationType.TICKET_RESOLVED,
-                "Ticket resolved", "Ticket #" + t.getId() + " \"" + t.getTitle() + "\" has been marked resolved.", t.getId());
+            for (User c : customerContacts(t)) {
+                notifications.notifyUnlessSelf(c, actor, NotificationType.TICKET_RESOLVED,
+                    "Ticket resolved", "Ticket #" + t.getId() + " \"" + t.getTitle() + "\" has been marked resolved.", t.getId());
+            }
         } else if (next == TicketStatus.CLOSED) {
-            notifications.notifyUnlessSelf(t.getCreatedBy(), actor, NotificationType.TICKET_CLOSED,
-                "Ticket closed", "Ticket #" + t.getId() + " \"" + t.getTitle() + "\" has been closed.", t.getId());
+            for (User c : customerContacts(t)) {
+                notifications.notifyUnlessSelf(c, actor, NotificationType.TICKET_CLOSED,
+                    "Ticket closed", "Ticket #" + t.getId() + " \"" + t.getTitle() + "\" has been closed.", t.getId());
+            }
+        } else if (leavingHold) {
+            for (User c : customerContacts(t)) {
+                notifications.notifyUnlessSelf(c, actor, NotificationType.TICKET_RESUMED,
+                    "Ticket resumed", "Ticket #" + t.getId() + " \"" + t.getTitle() + "\" is no longer on hold — it's " + label(next) + " again.", t.getId());
+            }
+        }
+        return get(actor, id);
+    }
+
+    /**
+     * Staff put a ticket ON_HOLD with a reason. The RESOLUTION clock stops now (slaPausedAt) and
+     * gets the paused working time back when the hold ends; the first-response clock keeps running.
+     * The customer sees the reason; the staff note is saved as an internal comment.
+     */
+    @Transactional
+    public TicketResponse putOnHold(User actor, Long id, HoldRequest req) {
+        requireStaff(actor);
+        Ticket t = loadAccessible(actor, id);
+        TicketStatus cur = t.getStatus();
+        if (cur == TicketStatus.ON_HOLD) {
+            throw new BusinessRuleException("This ticket is already on hold. Resume it first to change the reason.");
+        }
+        if (!SlaCalculator.isActive(t)) {
+            throw new BusinessRuleException("Only an open or in-progress ticket can be put on hold.");
+        }
+        LocalDateTime now = LocalDateTime.now();
+        if (req.getUntil() != null && !req.getUntil().isAfter(now)) {
+            throw new BusinessRuleException("The 'until' date must be in the future.");
+        }
+        HoldReason reason = req.getReason();
+
+        t.setStatus(TicketStatus.ON_HOLD);
+        t.setHoldReason(reason);
+        t.setHoldUntil(req.getUntil());
+        t.setSlaPausedAt(now);
+        tickets.save(t);
+
+        // What everyone sees: who, why and (if set) until when. The note below is staff-only.
+        String until = req.getUntil() == null ? "" : " (until " + DUE_FMT.format(req.getUntil()) + ")";
+        system(t, actor.getFirstName() + " put this ticket on hold — " + reason.label() + until + ".");
+        TicketComment note = new TicketComment();
+        note.setTicket(t);
+        note.setAuthor(actor);
+        note.setBody(req.getNote().trim());
+        note.setInternal(true);
+        comments.save(note);
+        audit.event("TICKET_ON_HOLD", "#" + id + " · " + cur + " -> ON_HOLD · " + reason);
+
+        for (User c : customerContacts(t)) {
+            notifications.notifyUnlessSelf(c, actor, NotificationType.TICKET_ON_HOLD,
+                "Ticket on hold", "Ticket #" + t.getId() + " \"" + t.getTitle() + "\" is on hold — " + reason.label() + until + ".", t.getId());
+        }
+        User requester = activeOrNull(t.getRequester());
+        if (requester != null) {
+            mailUnlessSelf(requester, actor, true,
+                "Ticket #" + t.getId() + " is on hold — " + mail.appName(),
+                "Hi " + requester.getFirstName() + ",\n\n"
+                + "Your ticket is on hold:\n\n"
+                + "#" + t.getId() + " — " + t.getTitle() + "\n"
+                + "Reason: " + reason.label() + "\n"
+                + (req.getUntil() == null ? "" : "Until: " + DUE_FMT.format(req.getUntil()) + "\n")
+                + (reason == HoldReason.CUSTOMER_REPLY
+                    ? "\nWe need a reply from you to continue. Reply on the ticket and it picks up again straight away.\n"
+                    : "\nWe'll let you know as soon as work resumes.\n")
+                + "\nView it here:\n" + mail.ticketLink(t.getId()) + "\n");
+        }
+        return get(actor, id);
+    }
+
+    /**
+     * Staff change who a ticket is for (null = company-level). The new requester must be an active
+     * user of the ticket's company. {@code createdBy} — who typed the ticket in — never changes.
+     */
+    @Transactional
+    public TicketResponse changeRequester(User actor, Long id, Long requesterId) {
+        requireStaff(actor);
+        Ticket t = loadAccessible(actor, id);
+        if (t.getStatus() == TicketStatus.CLOSED) {
+            throw new BusinessRuleException("This ticket is closed. Reopen it to change the requester.");
+        }
+        User next = requesterId == null ? null : requesterFor(t.getCompany(), requesterId);
+        User cur = t.getRequester();
+        Long curId = cur == null ? null : cur.getId();
+        Long nextId = next == null ? null : next.getId();
+        if (java.util.Objects.equals(curId, nextId)) return get(actor, id);
+
+        t.setRequester(next);
+        tickets.save(t);
+        system(t, actor.getFirstName() + " changed the requester from " + requesterName(cur) + " to " + requesterName(next) + ".");
+        audit.event("TICKET_REQUESTER_CHANGED", "#" + id + " · "
+            + (cur == null ? "none" : AuditLogger.describe(cur)) + " -> " + (next == null ? "none" : AuditLogger.describe(next)));
+        if (next != null) {
+            notifications.notifyUnlessSelf(next, actor, NotificationType.TICKET_REQUESTER_CHANGED,
+                "Ticket raised in your name", "Ticket #" + t.getId() + " \"" + t.getTitle()
+                    + "\" is now raised in your name. You'll get its updates from now on.", t.getId());
         }
         return get(actor, id);
     }
@@ -447,12 +592,19 @@ public class TicketService {
         // (creation, or the last reopen) — not from now, which handed every priority change a
         // fresh window and made the two checks below clear any recorded breach unconditionally.
         applySla(t, SlaCalculator.slaStart(t));
+        // Time this clock already spent on hold was handed back to the old deadline when each hold
+        // ended; the re-stamped one gets it too, or a priority change would quietly take it away.
+        if (t.getResolutionDueAt() != null && t.getSlaPausedMinutes() > 0) {
+            t.setResolutionDueAt(calendar.addWorkingMinutes(t.getCompany().getId(), t.getResolutionDueAt(), t.getSlaPausedMinutes()));
+        }
+        LocalDateTime now = LocalDateTime.now();
         if (t.getResponseDueAt() != null && t.getFirstResponseAt() == null
-            && !LocalDateTime.now().isAfter(t.getResponseDueAt())) {
+            && !now.isAfter(t.getResponseDueAt())) {
             t.setResponseBreachedAt(null);
         }
-        if (t.getResolutionDueAt() != null && SlaCalculator.isActive(t)
-            && !LocalDateTime.now().isAfter(t.getResolutionDueAt())) {
+        // On hold, the resolution clock is read where it stopped (SlaCalculator.resolutionClockNow).
+        if (t.getResolutionDueAt() != null && SlaCalculator.isOpenWork(t)
+            && !SlaCalculator.resolutionClockNow(t, now).isAfter(t.getResolutionDueAt())) {
             t.setResolutionBreachedAt(null);
         }
         tickets.save(t);
@@ -475,7 +627,8 @@ public class TicketService {
             if (!engineer.getRole().worksTickets() || engineer.getStatus() != UserStatus.ACTIVE) {
                 throw new BusinessRuleException("Only active engineers and admins can be assigned tickets");
             }
-            if (!SlaCalculator.isActive(t)) {
+            // On hold is still unfinished work — somebody owns waiting for that spare part.
+            if (!SlaCalculator.isOpenWork(t)) {
                 throw new BusinessRuleException("This ticket is " + label(t.getStatus()).toLowerCase(java.util.Locale.ROOT)
                     + ". Reopen it before assigning it to someone.");
             }
@@ -495,9 +648,11 @@ public class TicketService {
         if (assigneeId != null) {
             notifications.notifyUnlessSelf(t.getAssignee(), actor, NotificationType.TICKET_ASSIGNED_TO_YOU,
                 "New ticket assigned", "You've been assigned ticket #" + t.getId() + " \"" + t.getTitle() + "\".", t.getId());
-            notifications.notifyUnlessSelf(t.getCreatedBy(), actor, NotificationType.TICKET_ASSIGNED_NOTICE,
-                "Engineer assigned", t.getAssignee().getFirstName() + " " + t.getAssignee().getLastName()
-                    + " has been assigned to ticket #" + t.getId() + " \"" + t.getTitle() + "\".", t.getId());
+            for (User c : customerContacts(t)) {
+                notifications.notifyUnlessSelf(c, actor, NotificationType.TICKET_ASSIGNED_NOTICE,
+                    "Engineer assigned", t.getAssignee().getFirstName() + " " + t.getAssignee().getLastName()
+                        + " has been assigned to ticket #" + t.getId() + " \"" + t.getTitle() + "\".", t.getId());
+            }
 
             mailUnlessSelf(t.getAssignee(), actor, t.getAssignee().isNotifyOnAssign(),
                 "Ticket #" + t.getId() + " assigned to you — " + mail.appName(),
@@ -510,10 +665,12 @@ public class TicketService {
                 + due("Resolution due", t.getResolutionDueAt())
                 + "\nOpen the ticket here:\n" + mail.ticketLink(t.getId()) + "\n");
 
-            if (t.getCreatedBy() != null && !isStaff(t.getCreatedBy())) {
-                mail.send(t.getCreatedBy().getEmail(),
+            // Email only the requester — on a company-level ticket the admins get the bell, not a mail each time.
+            User requester = activeOrNull(t.getRequester());
+            if (requester != null) {
+                mailUnlessSelf(requester, actor, true,
                     "An engineer has been assigned to your ticket — " + mail.appName(),
-                    "Hi " + t.getCreatedBy().getFirstName() + ",\n\n"
+                    "Hi " + requester.getFirstName() + ",\n\n"
                     + t.getAssignee().getFirstName() + " " + t.getAssignee().getLastName()
                     + " has been assigned to your ticket:\n\n"
                     + "#" + t.getId() + " — " + t.getTitle() + "\n\n"
@@ -541,10 +698,28 @@ public class TicketService {
             tickets.save(t);
         }
 
+        // On hold waiting for the customer, and the customer answered: it starts moving again.
+        // Only this reason ends by itself — a customer reply doesn't produce a spare part.
+        boolean resumedByReply = !isStaff(actor) && !c.isInternal()
+            && t.getStatus() == TicketStatus.ON_HOLD && t.getHoldReason() == HoldReason.CUSTOMER_REPLY;
+        if (resumedByReply) {
+            long shifted = releaseHold(t, LocalDateTime.now());
+            t.setStatus(TicketStatus.IN_PROGRESS);
+            tickets.save(t);
+            system(t, "Resumed — " + actor.getFirstName() + " replied. " + holdEndedNote(shifted));
+            audit.event("TICKET_RESUMED", "#" + id + " · customer reply · -> IN_PROGRESS · resolution deadline +" + shifted + "m");
+        }
+
         if (!c.isInternal()) {
             for (User recipient : replyRecipients(actor, t)) {
-                notifications.notifyUnlessSelf(recipient, actor, NotificationType.TICKET_REPLY,
-                    "New reply", actor.getFirstName() + " replied to ticket #" + t.getId() + " \"" + t.getTitle() + "\".", t.getId());
+                if (resumedByReply) {
+                    notifications.notifyUnlessSelf(recipient, actor, NotificationType.TICKET_RESUMED,
+                        "Customer replied — ticket resumed", actor.getFirstName() + " replied to ticket #" + t.getId() + " \"" + t.getTitle()
+                            + "\". It was on hold waiting for them and is back In Progress.", t.getId());
+                } else {
+                    notifications.notifyUnlessSelf(recipient, actor, NotificationType.TICKET_REPLY,
+                        "New reply", actor.getFirstName() + " replied to ticket #" + t.getId() + " \"" + t.getTitle() + "\".", t.getId());
+                }
             }
 
             // A customer replying is the case an engineer can't afford to miss — mail it.
@@ -558,6 +733,7 @@ public class TicketService {
                     + ") replied to:\n\n"
                     + "#" + t.getId() + " — " + t.getTitle() + "\n\n"
                     + c.getBody() + "\n\n"
+                    + (resumedByReply ? "The ticket was on hold waiting for this reply and is back In Progress.\n\n" : "")
                     + "Reply here:\n" + mail.ticketLink(t.getId()) + "\n");
             }
         }
@@ -570,19 +746,86 @@ public class TicketService {
      * A customer's reply goes to the assignee — or, while nobody is assigned yet, to the company's
      * main engineer, the same person the email already went to (the bell used to go to nobody).
      *
-     * A staff reply goes to whoever raised the ticket. When staff raised it on the company's
-     * behalf there is no customer in that seat, so the company's admins are told instead;
-     * otherwise a public reply on such a ticket reached no customer at all.
+     * A staff reply goes to the customer side — the requester, or on a company-level ticket the
+     * company's admins (see {@link #customerContacts}).
      */
     private List<User> replyRecipients(User actor, Ticket t) {
         if (!isStaff(actor)) {
             User engineer = t.getAssignee() != null ? t.getAssignee() : activeOrNull(t.getCompany().getMainEngineer());
             return engineer == null ? List.of() : List.of(engineer);
         }
-        User raisedBy = t.getCreatedBy();
-        if (raisedBy != null && !isStaff(raisedBy)) return List.of(raisedBy);
+        return customerContacts(t);
+    }
+
+    /**
+     * The customer side of a ticket, for its bells: the requester while they're active. Otherwise
+     * — a company-level ticket, or a requester who has since left — the company's active Customer
+     * Admins, so a staff update on such a ticket still reaches somebody at the company.
+     */
+    private List<User> customerContacts(Ticket t) {
+        User requester = activeOrNull(t.getRequester());
+        if (requester != null) return List.of(requester);
         return users.findByRoleAndStatusNotAndCompanyIdIn(Roles.CUSTOMER_ADMIN, UserStatus.IS_DELETED, List.of(t.getCompany().getId()))
             .stream().filter(u -> u.getStatus() == UserStatus.ACTIVE).toList();
+    }
+
+    /**
+     * Who a ticket can be raised for / handed to: an ACTIVE customer account of that company.
+     * Anyone else — including a user of another company — is the same 422, so the id is neither
+     * confirmed nor denied.
+     */
+    private User requesterFor(Company company, Long userId) {
+        User u = users.findByIdAndStatusNot(userId, UserStatus.IS_DELETED).orElse(null);
+        boolean ok = u != null && u.getStatus() == UserStatus.ACTIVE && !isStaff(u)
+            && u.getCompany() != null && u.getCompany().getId().equals(company.getId());
+        if (!ok) throw new BusinessRuleException("The requester must be an active user of " + company.getName() + ".");
+        return u;
+    }
+
+    /**
+     * Ends a hold: counts the working minutes the ticket spent paused and moves the resolution
+     * deadline out by that much — but only if the deadline was still ahead when the hold began.
+     * One that had already passed was missed before the hold, and pushing it out would hide that
+     * (SlaCalculator.resolutionState and the report SQL read it the same way). Clears the hold
+     * fields either way. Returns how many minutes the deadline moved (0 when it didn't).
+     */
+    private long releaseHold(Ticket t, LocalDateTime now) {
+        LocalDateTime pausedAt = t.getSlaPausedAt();
+        long shifted = 0;
+        if (pausedAt != null) {
+            Long companyId = t.getCompany().getId();
+            long paused = calendar.workingMinutesBetween(companyId, pausedAt, now);
+            LocalDateTime due = t.getResolutionDueAt();
+            if (paused > 0 && due != null && !pausedAt.isAfter(due)) {
+                t.setResolutionDueAt(calendar.addWorkingMinutes(companyId, due, paused));
+                shifted = paused;
+            }
+            t.setSlaPausedMinutes(t.getSlaPausedMinutes() + paused);
+        }
+        t.setSlaPausedAt(null);
+        t.setHoldReason(null);
+        t.setHoldUntil(null);
+        return shifted;
+    }
+
+    private static String holdEndedNote(long shiftedMinutes) {
+        return shiftedMinutes > 0
+            ? "Hold ended — the resolution deadline moved out by " + humanMinutes(shiftedMinutes) + " of paused working time."
+            : "Hold ended.";
+    }
+
+    private static String humanMinutes(long minutes) {
+        if (minutes < 60) return minutes + "m";
+        long h = minutes / 60, m = minutes % 60;
+        return m == 0 ? h + "h" : h + "h " + m + "m";
+    }
+
+    private static String fullName(User u) {
+        return u.getFirstName() + " " + u.getLastName();
+    }
+
+    private static String requesterName(User u) {
+        return u == null ? "nobody (company-level)" : fullName(u);
     }
 
     @Transactional
@@ -654,7 +897,7 @@ public class TicketService {
     }
 
     private static String label(TicketStatus s) {
-        return switch (s) { case OPEN -> "Open"; case IN_PROGRESS -> "In Progress"; case RESOLVED -> "Resolved"; case CLOSED -> "Closed"; };
+        return switch (s) { case OPEN -> "Open"; case IN_PROGRESS -> "In Progress"; case ON_HOLD -> "On Hold"; case RESOLVED -> "Resolved"; case CLOSED -> "Closed"; };
     }
 
     private static boolean isStaff(User u) {

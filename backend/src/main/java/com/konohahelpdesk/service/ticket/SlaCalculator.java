@@ -19,10 +19,13 @@ import java.time.LocalDateTime;
  * this method would reintroduce the row cap that TicketReportRepository exists to remove. That
  * means the definitions below are mirrored by hand in TicketReportRepository's SLA queries, and
  * the two drifting apart is exactly what made the analytics page disagree with the ticket badges.
- * IF YOU CHANGE A RULE HERE, CHANGE IT THERE TOO. The three rules that have to stay in step:
+ * IF YOU CHANGE A RULE HERE, CHANGE IT THERE TOO. The four rules that have to stay in step:
  *   - the clock stops at coalesce(resolvedAt, closedAt), not resolvedAt alone;
  *   - finishing exactly on the deadline is MET, not missed (<=, never <);
- *   - a first response that arrived late leaves the response clock BREACHED for good.
+ *   - a first response that arrived late leaves the response clock BREACHED for good;
+ *   - an ON_HOLD ticket's RESOLUTION clock is read at slaPausedAt instead of now (in SQL:
+ *     coalesce(sla_paused_at, :now)) — missed if the deadline had already gone when the hold
+ *     started, otherwise PAUSED / unscored. The response clock is never paused.
  */
 @Component
 public class SlaCalculator {
@@ -45,6 +48,14 @@ public class SlaCalculator {
     }
 
     public SlaState resolutionState(Ticket t) {
+        if (t.getStatus() == TicketStatus.ON_HOLD && t.getResolutionDueAt() != null) {
+            // Paused: the clock is read at the moment it stopped. A deadline that had already gone
+            // by then was missed before the hold, and a hold doesn't take that back.
+            LocalDateTime pausedAt = t.getSlaPausedAt();
+            boolean missedBeforeHold = t.getResolutionBreachedAt() != null
+                || (pausedAt != null && pausedAt.isAfter(t.getResolutionDueAt()));
+            return missedBeforeHold ? SlaState.BREACHED : SlaState.PAUSED;
+        }
         return state(companyId(t), slaStart(t), t.getResolutionDueAt(), finishedAt(t), t.getResolutionBreachedAt());
     }
 
@@ -90,8 +101,24 @@ public class SlaCalculator {
         return (elapsed * 100L / total) >= cfg.getAtRiskPercent() ? SlaState.AT_RISK : SlaState.ON_TRACK;
     }
 
-    /** True when the ticket's clocks are still running (a closed ticket can't newly breach). */
+    /**
+     * True when the ticket's RESOLUTION clock is running: OPEN or IN_PROGRESS. A closed ticket can't
+     * newly breach, and neither can one ON_HOLD (its clock is paused) — see {@link #isOpenWork}.
+     */
     public static boolean isActive(Ticket t) {
         return t.getStatus() == TicketStatus.OPEN || t.getStatus() == TicketStatus.IN_PROGRESS;
+    }
+
+    /**
+     * Unfinished work: OPEN, IN_PROGRESS or ON_HOLD. What counts toward open-ticket badges and
+     * workloads, and what can still be assigned — a ticket waiting on a spare part is still somebody's.
+     */
+    public static boolean isOpenWork(Ticket t) {
+        return isActive(t) || t.getStatus() == TicketStatus.ON_HOLD;
+    }
+
+    /** "Now" for the resolution clock: frozen at the start of the hold while the ticket is on hold. */
+    public static LocalDateTime resolutionClockNow(Ticket t, LocalDateTime now) {
+        return t.getStatus() == TicketStatus.ON_HOLD && t.getSlaPausedAt() != null ? t.getSlaPausedAt() : now;
     }
 }

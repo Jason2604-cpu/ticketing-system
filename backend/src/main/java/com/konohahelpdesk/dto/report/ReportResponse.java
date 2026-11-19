@@ -33,6 +33,7 @@ public class ReportResponse {
         private long resolved;
         private long open;
         private long inProgress;
+        private long onHold;
         private long closed;
         /** Mean hours from creation to resolution, over tickets resolved in the period. */
         private double avgResolutionHours;
@@ -47,6 +48,8 @@ public class ReportResponse {
         public void setOpen(long v) { this.open = v; }
         public long getInProgress() { return inProgress; }
         public void setInProgress(long v) { this.inProgress = v; }
+        public long getOnHold() { return onHold; }
+        public void setOnHold(long v) { this.onHold = v; }
         public long getClosed() { return closed; }
         public void setClosed(long v) { this.closed = v; }
         public double getAvgResolutionHours() { return avgResolutionHours; }

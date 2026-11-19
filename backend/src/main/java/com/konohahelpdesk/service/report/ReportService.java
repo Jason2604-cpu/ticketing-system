@@ -237,6 +237,7 @@ public class ReportService {
         Map<TicketStatus, Long> byStatus = statusCounts(companyIds, from, to);
         t.setOpen(byStatus.getOrDefault(TicketStatus.OPEN, 0L));
         t.setInProgress(byStatus.getOrDefault(TicketStatus.IN_PROGRESS, 0L));
+        t.setOnHold(byStatus.getOrDefault(TicketStatus.ON_HOLD, 0L));
         t.setClosed(byStatus.getOrDefault(TicketStatus.CLOSED, 0L));
         // WORKING hours, not elapsed — see Durations.
         t.setAvgResolutionHours(round1(d.avgResolutionHours()));

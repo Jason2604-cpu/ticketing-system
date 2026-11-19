@@ -33,7 +33,8 @@ public class MonthlySummaryBuilder {
     public record Built(String subject, String html, String text, String periodLabel) {}
 
     private static final DateTimeFormatter MONTH = DateTimeFormatter.ofPattern("MMMM yyyy", Locale.ENGLISH);
-    private static final List<TicketStatus> OPEN_STATUSES = List.of(TicketStatus.OPEN, TicketStatus.IN_PROGRESS);
+    /** "Still open" = unfinished work, which includes tickets on hold. */
+    private static final List<TicketStatus> OPEN_STATUSES = List.of(TicketStatus.OPEN, TicketStatus.IN_PROGRESS, TicketStatus.ON_HOLD);
     private static final int TOP_RAISERS = 5;
 
     private final ReportService reports;

@@ -10,6 +10,7 @@ export const priorityStyles: Record<TicketPriority, { pill: string; dot: string;
 export const statusStyles: Record<TicketStatus, { pill: string; label: string }> = {
   OPEN: { pill: 'bg-blue-100 text-blue-600', label: 'Open' },
   IN_PROGRESS: { pill: 'bg-orange-100 text-orange-600', label: 'In Progress' },
+  ON_HOLD: { pill: 'bg-purple-100 text-purple-700', label: 'On Hold' },
   RESOLVED: { pill: 'bg-green-100 text-green-600', label: 'Resolved' },
   CLOSED: { pill: 'bg-gray-100 text-gray-600', label: 'Closed' },
 }
@@ -25,4 +26,5 @@ export const slaStyles: Record<SlaState, { pill: string; label: string } | null>
   ON_TRACK: { pill: 'bg-gray-100 text-gray-500', label: 'On track' },
   AT_RISK: { pill: 'bg-amber-100 text-amber-700', label: 'At risk' },
   BREACHED: { pill: 'bg-red-100 text-red-600', label: 'SLA breached' },
+  PAUSED: { pill: 'bg-purple-100 text-purple-700', label: 'SLA paused' },
 }
