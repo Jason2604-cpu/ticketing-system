@@ -236,6 +236,15 @@ Let's Encrypt certificates last 90 days; renew with
 
 ### Deploy a new version
 
+If the server folder is a git checkout, one command does all of the steps below (back up, pull,
+rebuild, restart) and does nothing when there is nothing new:
+
+```bash
+bash /opt/konoha-helpdesk/scripts/update.sh
+```
+
+The manual steps:
+
 ```bash
 cd /opt/konoha-helpdesk
 bash scripts/backup.sh            # always back up first

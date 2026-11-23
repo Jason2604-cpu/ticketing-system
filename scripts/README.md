@@ -14,6 +14,9 @@ the two dev servers, it doesn't configure anything.
   Ubuntu/Debian: `sudo bash scripts/install-docker-host.sh`. See DEPLOYMENT.md step 2.
 - `backup.sh` — dumps the database and the uploaded media into `backups/<timestamp>/`
   (keeps 14). Run from the project folder: `bash scripts/backup.sh`.
+- `update.sh` — updates the server from GitHub: fetch, back up, `git pull --ff-only`, rebuild,
+  restart (migrations run on backend start). Does nothing if already up to date:
+  `bash scripts/update.sh`. See DEPLOYMENT.md, "Deploy a new version".
 
 # Release scripts (publish images to Docker Hub)
 
