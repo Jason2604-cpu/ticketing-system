@@ -288,7 +288,12 @@ export interface Report {
 
 export interface ReportRange { from: string; to: string }
 
-export interface TicketComment { id: number; author?: Person; body: string; internal: boolean; system: boolean; createdAt: string }
+/**
+ * The quote shown above a reply. `unavailable` = the original can't be shown to this viewer (or is gone):
+ * then only `id` is set.
+ */
+export interface ReplyPreview { id: number; authorName?: string; excerpt?: string; internal: boolean; unavailable: boolean }
+export interface TicketComment { id: number; author?: Person; body: string; internal: boolean; system: boolean; createdAt: string; replyTo?: ReplyPreview | null }
 
 export type NotificationType = 'TICKET_ASSIGNED_TO_YOU' | 'TICKET_ASSIGNED_NOTICE' | 'TICKET_REPLY' | 'TICKET_RESOLVED' | 'TICKET_CLOSED' | 'TICKET_CREATED'
   | 'SLA_BREACH' | 'CONTRACT_RENEWAL_DUE' | 'KB_PUBLISH_REQUESTED' | 'KB_PUBLISH_DECIDED'

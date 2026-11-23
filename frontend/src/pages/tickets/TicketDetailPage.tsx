@@ -1,7 +1,7 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ArrowLeft, BookOpen, Building2, CirclePause, Clock, FileText, Lock, Paperclip, Send, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, BookOpen, Building2, CirclePause, Clock, FileText, Lock, Paperclip, Reply, Send, Trash2, X } from 'lucide-react'
 import { Topbar } from '../../components/layout/Topbar'
 import { Page } from '../../components/layout/AppShell'
 import { Card, CardBody, CardHeader } from '../../components/ui/Card'
@@ -27,13 +27,31 @@ import { useFeature } from '../../lib/useFeature'
 import { LinkifiedText } from '../../components/ui/LinkifiedText'
 import { RelatedArticlesCard } from '../kb/RelatedArticlesCard'
 import { ArticlePickerModal } from '../kb/ArticlePickerModal'
-import type { TicketPriority, TicketStatus } from '../../types'
+import type { Person, ReplyPreview, TicketComment, TicketPriority, TicketStatus } from '../../types'
 
 const STATUS_OPTS = [{ value: 'OPEN', label: 'Open' }, { value: 'IN_PROGRESS', label: 'In Progress' }, { value: 'ON_HOLD', label: 'On Hold' }, { value: 'RESOLVED', label: 'Resolved' }, { value: 'CLOSED', label: 'Closed' }] as const
 
 const fmtBytes = (n: number) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`)
 const overdue = (iso?: string, done?: string) => !!iso && !done && new Date(iso).getTime() < Date.now()
 const dateTime = (iso: string) => `${formatShortDate(iso)} ${new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+const personName = (p?: Person) => (p ? `${p.firstName} ${p.lastName}` : 'System')
+
+/** The WhatsApp-style quote at the top of a reply. Clicking it scrolls to the original. */
+function ReplyQuote({ preview, onJump }: { preview: ReplyPreview; onJump: (id: number) => void }) {
+  if (preview.unavailable) {
+    return <p className="mt-1.5 rounded-md border-l-4 border-gray-300 bg-white/70 px-3 py-1.5 text-xs italic text-muted">Original message unavailable</p>
+  }
+  return (
+    <button type="button" onClick={() => onJump(preview.id)} title="Go to the original message"
+      className={cn('mt-1.5 block w-full rounded-md border-l-4 bg-white/70 px-3 py-1.5 text-left text-xs transition-colors hover:bg-white',
+        preview.internal ? 'border-yellow-400' : 'border-brand-500')}>
+      <span className="block font-medium text-ink">
+        {preview.authorName}{preview.internal && <span className="font-normal text-yellow-800"> · Internal note</span>}
+      </span>
+      <span className="line-clamp-2 text-muted wrap-anywhere">{preview.excerpt}</span>
+    </button>
+  )
+}
 
 export default function TicketDetailPage() {
   const { id } = useParams()
@@ -48,7 +66,16 @@ export default function TicketDetailPage() {
   const [internal, setInternal] = useState(false)
   const [articlePicker, setArticlePicker] = useState(false)
   const [holdOpen, setHoldOpen] = useState(false)
+  // Reply (WhatsApp-style): the comment being answered, and the one briefly highlighted after a quote is clicked.
+  const [replyTo, setReplyTo] = useState<TicketComment | null>(null)
+  const [flashId, setFlashId] = useState<number | null>(null)
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const composer = useRef<HTMLTextAreaElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
+  // A reply to an internal note stays internal (the backend refuses otherwise), so it forces note mode.
+  const replyLocksInternal = !!replyTo?.internal
+  const asNote = internal || replyLocksInternal
+  useEffect(() => () => clearTimeout(flashTimer.current), [])
 
   // Poll while this page is open so new comments/status changes from the other side show up
   // without the user having to refresh. Pauses when the tab isn't visible (default react-query behaviour).
@@ -64,7 +91,20 @@ export default function TicketDetailPage() {
   const assign = useMutation({ mutationFn: (uid: number | null) => ticketsApi.assign(ticketId, uid), onSuccess: invalidate, onError: onErr })
   const setRequester = useMutation({ mutationFn: (rid: number | null) => ticketsApi.setRequester(ticketId, rid), onSuccess: () => { invalidate(); toast('Requester updated') }, onError: onErr })
   const setPriority = useMutation({ mutationFn: (p: TicketPriority) => ticketsApi.setPriority(ticketId, p), onSuccess: () => { invalidate(); toast('Priority updated — SLA targets recalculated') }, onError: onErr })
-  const addComment = useMutation({ mutationFn: () => ticketsApi.addComment(ticketId, comment, internal), onSuccess: () => { setComment(''); setInternal(false); invalidate() }, onError: onErr })
+  const addComment = useMutation({ mutationFn: () => ticketsApi.addComment(ticketId, comment, asNote, replyTo?.id), onSuccess: () => { setComment(''); setInternal(false); setReplyTo(null); invalidate() }, onError: onErr })
+
+  const startReply = (c: TicketComment) => {
+    setReplyTo(c)
+    composer.current?.focus()
+  }
+  const jumpTo = (commentId: number) => {
+    const el = document.getElementById(`comment-${commentId}`)
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    setFlashId(commentId)
+    clearTimeout(flashTimer.current)
+    flashTimer.current = setTimeout(() => setFlashId(null), 1600)
+  }
   const attach = useMutation({ mutationFn: (f: File) => ticketsApi.attach(ticketId, f), onSuccess: () => { invalidate(); toast('Attachment added') }, onError: onErr })
   const removeAttachment = useMutation({ mutationFn: (mid: string) => ticketsApi.removeAttachment(ticketId, mid), onSuccess: () => { invalidate(); toast('Attachment removed') }, onError: onErr })
 
@@ -145,13 +185,24 @@ export default function TicketDetailPage() {
                 {t.comments.map((c) => c.system ? (
                   <p key={c.id} className="flex items-center gap-2 pl-1 text-xs text-muted"><Clock size={12} /> {c.body} <span className="ml-auto">{timeAgo(c.createdAt)}</span></p>
                 ) : (
-                  <div key={c.id} className="flex gap-3">
+                  <div key={c.id} id={`comment-${c.id}`} className="group flex scroll-mt-24 gap-3">
                     <Avatar size="sm" firstName={c.author?.firstName} lastName={c.author?.lastName} src={api.mediaUrl(c.author?.photoUrl)} />
-                    <div className={cn('flex-1 rounded-lg px-4 py-3', c.internal ? 'border border-yellow-200 bg-yellow-50' : 'bg-gray-50')}>
-                      <div className="flex items-center justify-between text-xs text-muted">
-                        <span className="flex items-center gap-2 font-medium text-ink">{c.author ? `${c.author.firstName} ${c.author.lastName}` : 'System'}{c.internal && <span className="inline-flex items-center gap-1 rounded-full bg-yellow-100 px-2 py-0.5 text-[11px] text-yellow-800"><Lock size={10} /> Internal note</span>}</span>
-                        <span>{timeAgo(c.createdAt)}</span>
+                    <div className={cn('flex-1 rounded-lg px-4 py-3 transition-shadow', c.internal ? 'border border-yellow-200 bg-yellow-50' : 'bg-gray-50',
+                      flashId === c.id && 'ring-2 ring-brand-500')}>
+                      <div className="flex items-center justify-between gap-2 text-xs text-muted">
+                        <span className="flex items-center gap-2 font-medium text-ink">{personName(c.author)}{c.internal && <span className="inline-flex items-center gap-1 rounded-full bg-yellow-100 px-2 py-0.5 text-[11px] text-yellow-800"><Lock size={10} /> Internal note</span>}</span>
+                        <span className="flex shrink-0 items-center gap-2">
+                          {/* Shown on hover (always on touch screens, which can't hover). */}
+                          {!closed && (
+                            <button type="button" onClick={() => startReply(c)} title="Reply" aria-label={`Reply to ${personName(c.author)}`}
+                              className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-medium text-muted opacity-0 transition hover:bg-black/5 hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
+                              <Reply size={13} /> Reply
+                            </button>
+                          )}
+                          <span>{timeAgo(c.createdAt)}</span>
+                        </span>
                       </div>
+                      {c.replyTo && <ReplyQuote preview={c.replyTo} onJump={jumpTo} />}
                       <LinkifiedText text={c.body} className="mt-1 whitespace-pre-wrap text-sm" />
                     </div>
                   </div>
@@ -160,10 +211,24 @@ export default function TicketDetailPage() {
                   <form onSubmit={(e) => { e.preventDefault(); addComment.mutate() }} className="flex gap-3">
                     <Avatar size="sm" firstName={user?.firstName} lastName={user?.lastName} src={api.mediaUrl(user?.photoUrl)} />
                     <div className="flex-1">
-                      <Textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder={internal ? 'Internal note (customer will not see this)…' : 'Add a comment…'} className={cn('min-h-20', internal && 'border-yellow-300 bg-yellow-50/40')} />
+                      {replyTo && (
+                        <div className={cn('mb-2 flex items-start gap-2 rounded-md border-l-4 bg-gray-50 px-3 py-2 text-xs', replyTo.internal ? 'border-yellow-400' : 'border-brand-500')}>
+                          <Reply size={14} className="mt-0.5 shrink-0 text-muted" />
+                          <div className="min-w-0 flex-1">
+                            <p className="font-medium text-ink">Replying to {personName(replyTo.author)}{replyTo.internal && <span className="font-normal text-yellow-800"> · Internal note</span>}</p>
+                            <p className="truncate text-muted">{replyTo.body}</p>
+                          </div>
+                          <button type="button" onClick={() => setReplyTo(null)} title="Cancel reply (Esc)" aria-label="Cancel reply"
+                            className="rounded p-0.5 text-muted hover:bg-gray-200 hover:text-ink"><X size={14} /></button>
+                        </div>
+                      )}
+                      <Textarea ref={composer} value={comment} onChange={(e) => setComment(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Escape' && replyTo) { e.preventDefault(); setReplyTo(null) } }}
+                        placeholder={asNote ? 'Internal note (customer will not see this)…' : replyTo ? 'Write your reply…' : 'Add a comment…'} className={cn('min-h-20', asNote && 'border-yellow-300 bg-yellow-50/40')} />
                       <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center gap-3">
-                          {isStaff ? <Checkbox label="Internal note" checked={internal} onChange={(e) => setInternal(e.target.checked)} /> : <span />}
+                          {isStaff ? <Checkbox label="Internal note" checked={asNote} disabled={replyLocksInternal} title={replyLocksInternal ? 'Replies to an internal note stay internal' : undefined} onChange={(e) => setInternal(e.target.checked)} /> : <span />}
+                          {replyLocksInternal && <span className="text-xs text-muted">Replies to an internal note stay internal.</span>}
                           {/*
                             Staff only — the backend returns an empty list for customers, so this
                             renders nothing for them regardless of what the client asks for.
@@ -186,7 +251,7 @@ export default function TicketDetailPage() {
                             </button>
                           )}
                         </div>
-                        <Button size="sm" type="submit" disabled={!comment.trim()} loading={addComment.isPending}><Send size={14} /> {internal ? 'Add note' : 'Comment'}</Button>
+                        <Button size="sm" type="submit" disabled={!comment.trim()} loading={addComment.isPending}><Send size={14} /> {asNote ? 'Add note' : replyTo ? 'Reply' : 'Comment'}</Button>
                       </div>
                     </div>
                   </form>
@@ -283,7 +348,7 @@ export default function TicketDetailPage() {
       </Page>
       {isStaff && <HoldModal ticketId={t.id} open={holdOpen} onClose={() => setHoldOpen(false)} />}
       {articlePicker && (
-        <ArticlePickerModal ticketId={t.id} companyId={t.companyId} internal={internal}
+        <ArticlePickerModal ticketId={t.id} companyId={t.companyId} internal={asNote}
           onInsert={(line) => setComment((prev) => (prev.trim() ? `${prev.trimEnd()}\n\n${line}` : line))}
           onClose={() => setArticlePicker(false)} />
       )}

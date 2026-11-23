@@ -12,7 +12,9 @@ import com.konohahelpdesk.model.ticket.TicketStatus;
 import com.konohahelpdesk.model.user.User;
 
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class TicketResponse {
@@ -57,9 +59,44 @@ public class TicketResponse {
             return u == null ? null : new Person(u.getId(), u.getFirstName(), u.getLastName(), u.getPhotoId() == null ? null : "/api/media/" + u.getPhotoId());
         }
     }
-    public record Comment(Long id, Person author, String body, boolean internal, boolean system, LocalDateTime createdAt) {
-        public static Comment of(TicketComment c) {
-            return new Comment(c.getId(), Person.of(c.getAuthor()), c.getBody(), c.isInternal(), c.isSystem(), c.getCreatedAt());
+    /**
+     * @param replyTo the quoted original when this comment is a reply, else null.
+     */
+    public record Comment(Long id, Person author, String body, boolean internal, boolean system, LocalDateTime createdAt,
+                          ReplyPreview replyTo) {
+        /**
+         * @param visible every comment this viewer may see on the ticket, by id. The quote is only ever
+         *                taken from here, so a viewer can't be shown text they aren't allowed to read.
+         */
+        public static Comment of(TicketComment c, Map<Long, TicketComment> visible) {
+            return new Comment(c.getId(), Person.of(c.getAuthor()), c.getBody(), c.isInternal(), c.isSystem(), c.getCreatedAt(),
+                ReplyPreview.of(c, visible));
+        }
+    }
+
+    /**
+     * The WhatsApp-style quote above a reply. {@code unavailable} = the original isn't visible to
+     * this viewer (or no longer exists): then only the id is sent, never its author or text.
+     */
+    public record ReplyPreview(Long id, String authorName, String excerpt, boolean internal, boolean unavailable) {
+        /** Longest quote, in characters; longer originals are cut with an ellipsis. */
+        public static final int EXCERPT_MAX = 160;
+
+        static ReplyPreview of(TicketComment c, Map<Long, TicketComment> visible) {
+            Long parentId = c.getReplyToId();
+            if (parentId == null) return null;
+            TicketComment p = visible.get(parentId);
+            if (p == null) return new ReplyPreview(parentId, null, null, false, true);
+            String name = p.getAuthor() == null ? "System" : (p.getAuthor().getFirstName() + " " + p.getAuthor().getLastName()).trim();
+            return new ReplyPreview(p.getId(), name, excerpt(p.getBody(), EXCERPT_MAX), p.isInternal(), false);
+        }
+
+        /** One line: whitespace runs collapsed, cut at {@code max} characters (never inside an emoji) + "…". */
+        public static String excerpt(String body, int max) {
+            if (body == null) return "";
+            String flat = body.strip().replaceAll("\\s+", " ");
+            if (flat.codePointCount(0, flat.length()) <= max) return flat;
+            return flat.substring(0, flat.offsetByCodePoints(0, max)).stripTrailing() + "…";
         }
     }
     public record Attachment(String id, String name, String contentType, long sizeBytes, String url, LocalDateTime createdAt) {
@@ -103,7 +140,10 @@ public class TicketResponse {
         TicketResponse r = summary(t, comments.stream().filter(c -> !c.isSystem()).count());
         r.description = t.getDescription();
         r.stepsToReproduce = t.getStepsToReproduce();
-        r.comments = comments.stream().map(Comment::of).toList();
+        // Reply quotes come from this same list (no extra queries, and only what this viewer may see).
+        Map<Long, TicketComment> visible = new HashMap<>();
+        for (TicketComment c : comments) visible.put(c.getId(), c);
+        r.comments = comments.stream().map(c -> Comment.of(c, visible)).toList();
         r.attachments = attachments.stream().map(Attachment::of).toList();
         return r;
     }

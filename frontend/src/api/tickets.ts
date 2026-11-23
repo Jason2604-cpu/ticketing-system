@@ -33,7 +33,9 @@ export const ticketsApi = {
   putOnHold: (id: number, body: HoldRequest) => api.patch<Ticket>(`/tickets/${id}/hold`, body),
   /** Staff only. The backend re-stamps the SLA due dates from the new priority. */
   setPriority: (id: number, priority: TicketPriority) => api.patch<Ticket>(`/tickets/${id}/priority?priority=${priority}`),
-  addComment: (id: number, body: string, internal = false) => api.post<Ticket>(`/tickets/${id}/comments`, { body, internal }),
+  /** replyToId: the comment being replied to (WhatsApp-style quote); omit for an ordinary comment. */
+  addComment: (id: number, body: string, internal = false, replyToId?: number | null) =>
+    api.post<Ticket>(`/tickets/${id}/comments`, { body, internal, ...(replyToId ? { replyToId } : {}) }),
   attach: (id: number, file: File) => { const fd = new FormData(); fd.append('file', file); return api.post<Ticket>(`/tickets/${id}/attachments`, fd) },
   removeAttachment: (id: number, mediaId: string) => api.delete<void>(`/tickets/${id}/attachments/${mediaId}`),
   assignees: () => api.get<User[]>('/tickets/assignees'),

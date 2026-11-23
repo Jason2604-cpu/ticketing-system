@@ -690,6 +690,7 @@ public class TicketService {
         c.setAuthor(actor);
         c.setBody(req.getBody().trim());
         c.setInternal(isStaff(actor) && req.isInternal());
+        if (req.getReplyToId() != null) c.setReplyTo(replyTarget(actor, t, c, req.getReplyToId()));
         comments.save(c);
 
         // First public reply from staff counts as the SLA "first response".
@@ -862,6 +863,26 @@ public class TicketService {
     private TicketResponse withSla(Ticket t, TicketResponse r) {
         r.applySla(slaCalculator.responseState(t), slaCalculator.resolutionState(t));
         return r;
+    }
+
+    /**
+     * The comment a new comment replies to (WhatsApp-style quote). Must be a human comment on the same
+     * ticket. A reply to an internal note has to be internal too, or its quote would show the note's
+     * text to the customer.
+     */
+    private TicketComment replyTarget(User actor, Ticket t, TicketComment reply, Long replyToId) {
+        String missing = "The message you replied to no longer exists.";
+        TicketComment parent = comments.findById(replyToId).orElseThrow(() -> new BusinessRuleException(missing));
+        boolean sameTicket = parent.getTicket().getId().equals(t.getId());
+        // Customers get one answer for "no such id", "on another ticket" and "an internal note", so
+        // trying ids can't tell them where internal notes are.
+        if (!isStaff(actor) && (!sameTicket || parent.isInternal())) throw new BusinessRuleException(missing);
+        if (!sameTicket) throw new BusinessRuleException("You can only reply to a message on the same ticket.");
+        if (parent.isSystem()) throw new BusinessRuleException("System activity can't be replied to.");
+        if (parent.isInternal() && !reply.isInternal()) {
+            throw new BusinessRuleException("A reply to an internal note must also be internal.");
+        }
+        return parent;
     }
 
     private void system(Ticket t, String text) {

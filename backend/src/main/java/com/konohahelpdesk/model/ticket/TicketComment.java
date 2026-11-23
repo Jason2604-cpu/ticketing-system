@@ -33,6 +33,21 @@ public class TicketComment {
     @Column(nullable = false)
     private boolean system = false;
 
+    /**
+     * The comment this one replies to (WhatsApp-style quote), or null. Always on the same ticket,
+     * never a system entry; a reply to an internal note is itself internal — see TicketService.comment().
+     */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "reply_to_id")
+    private TicketComment replyTo;
+
+    /**
+     * Read-only copy of reply_to_id, so the reply preview can be built without touching the lazy
+     * {@link #replyTo} reference. Kept in step by {@link #setReplyTo} for comments created in this session.
+     */
+    @Column(name = "reply_to_id", insertable = false, updatable = false)
+    private Long replyToId;
+
     @Column(name = "created_at", updatable = false, nullable = false)
     private LocalDateTime createdAt;
 
@@ -50,5 +65,11 @@ public class TicketComment {
     public void setInternal(boolean internal) { this.internal = internal; }
     public boolean isSystem() { return system; }
     public void setSystem(boolean system) { this.system = system; }
+    public TicketComment getReplyTo() { return replyTo; }
+    public void setReplyTo(TicketComment replyTo) {
+        this.replyTo = replyTo;
+        this.replyToId = replyTo == null ? null : replyTo.getId();
+    }
+    public Long getReplyToId() { return replyToId; }
     public LocalDateTime getCreatedAt() { return createdAt; }
 }
